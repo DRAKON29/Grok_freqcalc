@@ -98,25 +98,46 @@
     return 6.9 + 20 * Math.log10(Math.sqrt((v - 0.1) ** 2 + 1) + v - 0.1);
   }
 
-  function diffractionLoss(distances, effective, txH, rxH, freqMHz) {
+  function diffractionLoss(distances, effective, txH, rxH, freqMHz, method) {
+    method = method || "deygout";
     const D = distances[distances.length - 1];
     if (D <= 0 || distances.length < 3) return 0;
-    let maxClear = -Infinity, idx = -1;
+    const obstacles = [];
     for (let i = 1; i < distances.length - 1; i++) {
       const los = txH + (rxH - txH) * (distances[i] / D);
       const clear = effective[i] - los;
-      if (clear > maxClear) { maxClear = clear; idx = i; }
+      if (clear >= 0.5) {
+        obstacles.push({ h: clear, d1: distances[i], d2: D - distances[i] });
+      }
     }
-    if (idx < 0 || maxClear <= 0) return 0;
-    const d1 = distances[idx], d2 = D - d1;
+    if (!obstacles.length) return 0;
+    obstacles.sort((a, b) => b.h - a.h);
+    const maxEdges = method === "single" ? 1 : 3;
+    const top = obstacles.slice(0, maxEdges);
     const wl = wavelength(freqMHz);
-    const v = maxClear * Math.sqrt((2 / wl) * (1 / d1 + 1 / d2));
-    return knifeEdgeLoss(v);
+    let total = 0;
+    for (const o of top) {
+      const v = o.h * Math.sqrt((2 / wl) * (1 / o.d1 + 1 / o.d2));
+      total += knifeEdgeLoss(v);
+    }
+    if (top.length > 1) total *= 0.85; // Deygout empirical correction
+    return total;
   }
 
-  function pathLoss(distances, effective, txH, rxH, freqMHz) {
+  function frequencySweep(prof, fStart, fStop, fStep, method) {
+    method = method || "deygout";
+    if (fStep <= 0) fStep = Math.max((fStop - fStart) / 20, 0.1);
+    const out = [];
+    for (let f = fStart; f <= fStop + fStep * 0.01; f += fStep) {
+      const L = pathLoss(prof.distances, prof.effective, prof.txH, prof.rxH, f, method);
+      out.push({ freq_mhz: +f.toFixed(4), path_loss_db: +L.toFixed(2) });
+    }
+    return out;
+  }
+
+  function pathLoss(distances, effective, txH, rxH, freqMHz, method) {
     const D = distances[distances.length - 1];
-    return freeSpaceLoss(D, freqMHz) + diffractionLoss(distances, effective, txH, rxH, freqMHz);
+    return freeSpaceLoss(D, freqMHz) + diffractionLoss(distances, effective, txH, rxH, freqMHz, method);
   }
 
   function antennaGain(gMax, azOff, bw3db) {
@@ -138,7 +159,7 @@
       p.rxLat, p.rxLon, p.rxH,
       p.stepM || 100, p.kFactor || 4 / 3
     );
-    const L = pathLoss(prof.distances, prof.effective, prof.txH, prof.rxH, p.freqMHz);
+    const L = pathLoss(prof.distances, prof.effective, prof.txH, prof.rxH, p.freqMHz, p.method);
     const azOff = 0; // assume boresight toward Rx for simplicity on point-to-point
     const gt = antennaGain(p.txGain, azOff, p.txBw);
     const gr = p.rxGain;
@@ -189,7 +210,7 @@
         const dSub = prof.distances.slice(0, idx + 1);
         const eSub = prof.effective.slice(0, idx + 1);
         const rxH = eSub[eSub.length - 1] + p.rxH;
-        const L = pathLoss(dSub, eSub, prof.txH, rxH, p.freqMHz);
+        const L = pathLoss(dSub, eSub, prof.txH, rxH, p.freqMHz, p.method);
         const pr = p.txPower + gt + p.rxGain - L - p.txFeeder - p.rxFeeder;
         row.push(pr);
         total++;
@@ -391,6 +412,10 @@
     computeCoverage,
     drawProfile,
     drawCoverage,
+    frequencySweep,
+    buildProfile,
+    pathLoss,
+    freeSpaceLoss,
     haversine,
     elevation,
   };

@@ -48,10 +48,13 @@
       rxFeeder: num("rx_feeder_db"),
       kFactor: num("k_factor"),
       stepM: 100,
+      method: document.getElementById("diff_method").value,
     };
   }
 
   const loading = document.getElementById("loading");
+  let lastLinkResult = null;
+  let lastSweep = null;
   function showLoading(on) { loading.classList.toggle("hidden", !on); }
 
   // ── Maps ──────────────────────────────────────────────────────────
@@ -149,7 +152,9 @@
     showLoading(true);
     setTimeout(() => {
       try {
-        const result = RadioCalc.computeLink(params());
+        const p = params();
+        const result = RadioCalc.computeLink(p);
+        lastLinkResult = { params: p, result: result };
         document.getElementById("m-dist").textContent = result.distanceKm.toFixed(2);
         document.getElementById("m-loss").textContent = result.pathLossDb.toFixed(1);
         document.getElementById("m-pr").textContent = result.prDbm.toFixed(1);
@@ -183,6 +188,49 @@
         const ctx = canvas.getContext("2d");
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.drawImage(logical, 0, 0);
+
+        
+        // Frequency sweep
+        const sweepOn = document.getElementById("freq_sweep_on").checked;
+        const sweepBox = document.getElementById("sweep-result");
+        if (sweepOn) {
+          const f0 = num("f_start"), f1 = num("f_stop"), fs = num("f_step");
+          const sweep = RadioCalc.frequencySweep(result.profile, f0, f1, fs, p.method);
+          lastSweep = sweep;
+          const mode = document.getElementById("freq_mode").value;
+          let pick = sweep[0];
+          if (mode === "worst") pick = sweep.reduce((a, b) => a.path_loss_db > b.path_loss_db ? a : b);
+          if (mode === "best") pick = sweep.reduce((a, b) => a.path_loss_db < b.path_loss_db ? a : b);
+          if (mode !== "all") {
+            document.getElementById("m-loss").textContent = pick.path_loss_db.toFixed(1);
+            const pr = p.txPower + p.txGain + p.rxGain - pick.path_loss_db - p.txFeeder - p.rxFeeder;
+            document.getElementById("m-pr").textContent = pr.toFixed(1);
+            const margin = pr - p.rxSens;
+            document.getElementById("m-margin").textContent = (margin >= 0 ? "+" : "") + margin.toFixed(1);
+          }
+          // Draw L(f)
+          const sc = document.getElementById("sweep-canvas");
+          const dpr = window.devicePixelRatio || 1;
+          const w = sc.getBoundingClientRect().width || 320;
+          const h = 180;
+          sc.width = Math.round(w * dpr); sc.height = Math.round(h * dpr);
+          sc.style.width = w + "px"; sc.style.height = h + "px";
+          const g = document.createElement("canvas"); g.width = w; g.height = h;
+          drawSweepChart(g, sweep);
+          const sctx = sc.getContext("2d");
+          sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          sctx.drawImage(g, 0, 0);
+          const losses = sweep.map(x => x.path_loss_db);
+          document.getElementById("sweep-summary").textContent =
+            "Lmin=" + Math.min(...losses).toFixed(1) + " дБ @ " +
+            sweep.find(x => x.path_loss_db === Math.min(...losses)).freq_mhz + " МГц · " +
+            "Lmax=" + Math.max(...losses).toFixed(1) + " дБ @ " +
+            sweep.find(x => x.path_loss_db === Math.max(...losses)).freq_mhz + " МГц";
+          sweepBox.classList.remove("hidden");
+        } else {
+          sweepBox.classList.add("hidden");
+          lastSweep = null;
+        }
 
         document.getElementById("link-result").classList.remove("hidden");
         setTimeout(() => {
@@ -257,5 +305,70 @@
         showLoading(false);
       }
     }, 30);
+  });
+
+
+  function drawSweepChart(canvas, sweep) {
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    const pad = { l: 44, r: 12, t: 12, b: 28 };
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, W, H);
+    if (!sweep.length) return;
+    const xs = sweep.map(s => s.freq_mhz);
+    const ys = sweep.map(s => s.path_loss_db);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const y0 = Math.min(...ys) - 2, y1 = Math.max(...ys) + 2;
+    const X = v => pad.l + ((v - x0) / (x1 - x0 || 1)) * (W - pad.l - pad.r);
+    const Y = v => pad.t + (1 - (v - y0) / (y1 - y0 || 1)) * (H - pad.t - pad.b);
+    ctx.strokeStyle = "#3b82f6";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    sweep.forEach((s, i) => {
+      const x = X(s.freq_mhz), y = Y(s.path_loss_db);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = "#334155";
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("f, МГц", W / 2, H - 4);
+    ctx.textAlign = "right";
+    ctx.fillText(y1.toFixed(0), pad.l - 4, pad.t + 8);
+    ctx.fillText(y0.toFixed(0), pad.l - 4, H - pad.b);
+  }
+
+  function download(filename, text, mime) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  document.getElementById("btn-export-json").addEventListener("click", () => {
+    if (!lastLinkResult) { alert("Сначала выполните расчёт трассы"); return; }
+    const payload = {
+      ...lastLinkResult,
+      sweep: lastSweep,
+      exported_at: new Date().toISOString(),
+    };
+    download("radio_link.json", JSON.stringify(payload, null, 2), "application/json");
+  });
+
+  document.getElementById("btn-export-csv").addEventListener("click", () => {
+    if (!lastLinkResult) { alert("Сначала выполните расчёт трассы"); return; }
+    const r = lastLinkResult.result;
+    let csv = "metric,value\n";
+    csv += "distance_km," + r.distanceKm + "\n";
+    csv += "path_loss_db," + r.pathLossDb + "\n";
+    csv += "pr_dbm," + r.prDbm + "\n";
+    csv += "margin_db," + r.marginDb + "\n";
+    csv += "is_covered," + r.isCovered + "\n";
+    if (lastSweep) {
+      csv += "\nfreq_mhz,path_loss_db\n";
+      lastSweep.forEach(s => { csv += s.freq_mhz + "," + s.path_loss_db + "\n"; });
+    }
+    download("radio_link.csv", csv, "text/csv");
   });
 })();

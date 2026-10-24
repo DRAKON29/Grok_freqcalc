@@ -118,28 +118,6 @@ def gas_attenuation_approx(distance_m: float, freq_mhz: float) -> float:
     return gamma * d_km
 
 
-def path_loss_db(
-    distances: np.ndarray,
-    effective_h: np.ndarray,
-    tx_h: float,
-    rx_h: float,
-    freq_mhz: float,
-    include_diffraction: bool = True,
-    include_gas: bool = True,
-) -> float:
-    """
-    Total path loss (dB) for a given profile.
-    Core of the prototype model (approximation of P.2001 LOS/diffraction part).
-    """
-    D = distances[-1]
-    Lfs = free_space_loss_db(D, freq_mhz)
-    Ld = 0.0
-    if include_diffraction:
-        Ld = diffraction_loss_single(distances, effective_h, tx_h, rx_h, freq_mhz)
-    Lg = gas_attenuation_approx(D, freq_mhz) if include_gas else 0.0
-    return Lfs + Ld + Lg
-
-
 def path_loss_along_profile(
     distances: np.ndarray,
     effective_h: np.ndarray,
@@ -163,3 +141,141 @@ def path_loss_along_profile(
         losses[i] = path_loss_db(d_sub, h_sub, tx_h, rx_h, freq_mhz)
     losses[0] = 0.0
     return losses
+
+
+# ── Multi-obstacle diffraction (Deygout, ITU-R P.526 style) ─────────
+
+def find_obstacles(
+    distances: np.ndarray,
+    effective_h: np.ndarray,
+    tx_h: float,
+    rx_h: float,
+    min_clearance_m: float = 0.5,
+) -> list:
+    """All points where terrain protrudes above LOS by >= min_clearance_m."""
+    D = distances[-1]
+    if D <= 0 or len(distances) < 3:
+        return []
+    los = tx_h + (rx_h - tx_h) * (distances / D)
+    clearance = effective_h - los
+    obstacles = []
+    for i in range(1, len(distances) - 1):
+        if clearance[i] >= min_clearance_m:
+            obstacles.append({
+                "index": i,
+                "h_clearance": float(clearance[i]),
+                "d1": float(distances[i]),
+                "d2": float(D - distances[i]),
+                "distance_m": float(distances[i]),
+            })
+    return obstacles
+
+
+def diffraction_loss_deygout(
+    distances: np.ndarray,
+    effective_h: np.ndarray,
+    tx_h: float,
+    rx_h: float,
+    freq_mhz: float,
+    max_edges: int = 3,
+) -> float:
+    """
+    Simplified Deygout method: main edge + secondary edges on each side.
+    Caps at max_edges to keep computation bounded.
+    """
+    obs = find_obstacles(distances, effective_h, tx_h, rx_h)
+    if not obs:
+        return 0.0
+    # Sort by clearance (main edge first)
+    obs = sorted(obs, key=lambda o: o["h_clearance"], reverse=True)[:max_edges]
+    wl = wavelength_m(freq_mhz)
+    total = 0.0
+    for o in obs:
+        v = compute_v(o["h_clearance"], o["d1"], o["d2"], wl)
+        total += knife_edge_loss_db(v)
+    # Empirical correction: full sum overestimates; Deygout uses partial correction
+    if len(obs) > 1:
+        total *= 0.85
+    return float(total)
+
+
+def cost231_path_loss_db(
+    distance_m: float,
+    freq_mhz: float,
+    h_tx: float,
+    h_rx: float,
+    environment: str = "urban",
+) -> float:
+    """
+    COST-231 Hata-like model for short urban/suburban links (< ~20 km).
+    Suitable option for d < 3–5 km as per original requirements.
+    """
+    d_km = max(distance_m / 1000.0, 0.01)
+    f = max(freq_mhz, 150.0)
+    hb = max(h_tx, 1.0)
+    hm = max(h_rx, 1.0)
+    a_hm = (1.1 * np.log10(f) - 0.7) * hm - (1.56 * np.log10(f) - 0.8)
+    L = (
+        46.3
+        + 33.9 * np.log10(f)
+        - 13.82 * np.log10(hb)
+        - a_hm
+        + (44.9 - 6.55 * np.log10(hb)) * np.log10(d_km)
+    )
+    if environment == "urban":
+        L += 3.0
+    elif environment == "suburban":
+        L += 0.0
+    else:  # open
+        L -= 4.78 * (np.log10(f) ** 2) + 18.33 * np.log10(f) - 40.94
+    return float(L)
+
+
+def path_loss_db(
+    distances: np.ndarray,
+    effective_h: np.ndarray,
+    tx_h: float,
+    rx_h: float,
+    freq_mhz: float,
+    include_diffraction: bool = True,
+    include_gas: bool = True,
+    method: str = "deygout",
+) -> float:
+    """
+    Total path loss (dB).
+    method: 'single' | 'deygout' | 'cost231'
+    """
+    D = float(distances[-1])
+    if method == "cost231" and D < 5000:
+        return cost231_path_loss_db(D, freq_mhz, tx_h, rx_h, "suburban")
+
+    Lfs = free_space_loss_db(D, freq_mhz)
+    Ld = 0.0
+    if include_diffraction:
+        if method == "deygout":
+            Ld = diffraction_loss_deygout(distances, effective_h, tx_h, rx_h, freq_mhz)
+        else:
+            Ld = diffraction_loss_single(distances, effective_h, tx_h, rx_h, freq_mhz)
+    Lg = gas_attenuation_approx(D, freq_mhz) if include_gas else 0.0
+    return Lfs + Ld + Lg
+
+
+def frequency_sweep(
+    distances: np.ndarray,
+    effective_h: np.ndarray,
+    tx_h: float,
+    rx_h: float,
+    f_start_mhz: float,
+    f_stop_mhz: float,
+    f_step_mhz: float,
+    method: str = "deygout",
+) -> list:
+    """Return list of {freq_mhz, path_loss_db} across a frequency range."""
+    if f_step_mhz <= 0:
+        f_step_mhz = max((f_stop_mhz - f_start_mhz) / 20, 0.1)
+    freqs = np.arange(f_start_mhz, f_stop_mhz + f_step_mhz * 0.5, f_step_mhz)
+    results = []
+    for f in freqs:
+        L = path_loss_db(distances, effective_h, tx_h, rx_h, float(f), method=method)
+        results.append({"freq_mhz": float(f), "path_loss_db": float(L)})
+    return results

@@ -66,6 +66,15 @@
             <span class="lbl" id="m-status">запас</span>
           </div>
         </div>
+        <div class="row-btns">
+          <button type="button" id="btn-export-json" class="btn ghost">Экспорт JSON</button>
+          <button type="button" id="btn-export-csv" class="btn ghost">Экспорт CSV</button>
+        </div>
+        <div id="sweep-result" class="card hidden">
+          <h2>Зависимость потерь от частоты</h2>
+          <canvas id="sweep-canvas" width="640" height="220"></canvas>
+          <p class="hint" id="sweep-summary"></p>
+        </div>
         <div class="card">
           <h2>Профиль рельефа</h2>
           <canvas id="profile-canvas" width="640" height="280"></canvas>
@@ -161,6 +170,26 @@
         <label>k-фактор
           <input type="range" id="k_factor" min="1.0" max="2.0" step="0.01" value="1.33" />
           <span id="k_factor_val">1.33</span>
+        </label>
+        <label>Дифракция
+          <select id="diff_method">
+            <option value="deygout">Deygout (P.526, несколько рёбер)</option>
+            <option value="single">Одно ребро (knife-edge)</option>
+          </select>
+        </label>
+      </div>
+      <div class="card">
+        <h2>Диапазон частот</h2>
+        <label>Включить свип <input type="checkbox" id="freq_sweep_on" /></label>
+        <label>f нач., МГц <input type="number" id="f_start" step="0.1" value="400" inputmode="decimal" /></label>
+        <label>f кон., МГц <input type="number" id="f_stop" step="0.1" value="470" inputmode="decimal" /></label>
+        <label>Шаг, МГц <input type="number" id="f_step" step="0.1" value="5" inputmode="decimal" /></label>
+        <label>Режим
+          <select id="freq_mode">
+            <option value="all">Зависимость L(f)</option>
+            <option value="worst">Наихудший (max L)</option>
+            <option value="best">Наилучший (min L)</option>
+          </select>
         </label>
       </div>
       <div class="card">
