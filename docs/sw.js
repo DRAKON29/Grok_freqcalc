@@ -1,10 +1,11 @@
-const CACHE = "radio-calc-pages-v1";
+const CACHE = "radio-calc-pages-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./css/app.css",
   "./js/app.js",
   "./js/radio.js",
+  "./js/maps.js",
   "./manifest.json",
   "./icons/icon.svg",
   "./icons/icon-192.png",
@@ -23,6 +24,11 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
+  const url = e.request.url;
+  if (url.includes("tile.") || url.includes("arcgisonline") || url.includes("unpkg.com")) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
   e.respondWith(
     caches.match(e.request).then((cached) => cached || fetch(e.request))
   );

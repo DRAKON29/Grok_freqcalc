@@ -7,11 +7,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Радиокалькулятор" />
-  <meta name="description" content="Калькулятор радиодальности и радиотени — FSPL + дифракция" />
+  <meta name="description" content="Калькулятор радиодальности и радиотени с картой" />
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <title>Радиокалькулятор</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <link rel="stylesheet" href="css/app.css" />
 </head>
 <body>
@@ -20,19 +22,22 @@
       <div class="logo">📡</div>
       <div class="header-text">
         <h1>Радиокалькулятор</h1>
-        <p class="subtitle">Дальность · Радиотень · Покрытие</p>
+        <p class="subtitle">Дальность · Радиотень · Карта</p>
       </div>
     </header>
 
     <nav class="tabs">
       <button class="tab active" data-tab="link">Трасса</button>
       <button class="tab" data-tab="coverage">Покрытие</button>
+      <button class="tab" data-tab="map">Карта</button>
       <button class="tab" data-tab="params">Параметры</button>
     </nav>
 
+    <!-- Tab: Link -->
     <section id="tab-link" class="tab-panel active">
       <div class="card">
         <h2>Координаты (WGS84)</h2>
+        <p class="hint">Можно задать здесь или тапнуть на вкладке «Карта».</p>
         <div class="grid2">
           <div>
             <h3>Передатчик (Tx)</h3>
@@ -65,9 +70,14 @@
           <h2>Профиль рельефа</h2>
           <canvas id="profile-canvas" width="640" height="280"></canvas>
         </div>
+        <div class="card map-card">
+          <h2>Трасса на карте</h2>
+          <div id="map-link" class="map-box"></div>
+        </div>
       </div>
     </section>
 
+    <!-- Tab: Coverage -->
     <section id="tab-coverage" class="tab-panel">
       <div class="card">
         <h2>Круговая диаграмма</h2>
@@ -82,7 +92,7 @@
             <option value="30">30°</option>
           </select>
         </label>
-        <p class="hint">Синтетический рельеф. Расчёт в браузере — без сервера.</p>
+        <p class="hint">Синтетический рельеф + карта OpenStreetMap.</p>
       </div>
       <button id="btn-coverage" class="btn primary">Рассчитать покрытие</button>
       <div id="coverage-result" class="hidden">
@@ -95,9 +105,42 @@
         <div class="card">
           <canvas id="coverage-canvas" width="480" height="480"></canvas>
         </div>
+        <div class="card map-card">
+          <h2>Покрытие на карте</h2>
+          <div id="map-coverage" class="map-box"></div>
+        </div>
       </div>
     </section>
 
+    <!-- Tab: Map (interactive placement) -->
+    <section id="tab-map" class="tab-panel">
+      <div class="card">
+        <h2>Выбор точек на карте</h2>
+        <div class="map-mode">
+          <button type="button" class="btn-chip active" data-place="tx">Ставить Tx</button>
+          <button type="button" class="btn-chip" data-place="rx">Ставить Rx</button>
+        </div>
+        <p class="hint">Тапните по карте, чтобы задать координаты. Перетаскивайте маркеры.</p>
+      </div>
+      <div class="card map-card">
+        <div id="map-main" class="map-box map-tall"></div>
+      </div>
+      <div class="card">
+        <div class="grid2">
+          <div>
+            <h3>Tx</h3>
+            <p class="coord-readout" id="read-tx">55.7558, 37.6173</p>
+          </div>
+          <div>
+            <h3>Rx</h3>
+            <p class="coord-readout" id="read-rx">55.8500, 37.7000</p>
+          </div>
+        </div>
+      </div>
+      <button id="btn-link-from-map" class="btn primary">Рассчитать трассу</button>
+    </section>
+
+    <!-- Tab: Params -->
     <section id="tab-params" class="tab-panel">
       <div class="card">
         <h2>Частота и энергия</h2>
@@ -120,6 +163,16 @@
           <span id="k_factor_val">1.33</span>
         </label>
       </div>
+      <div class="card">
+        <h2>Подложка карты</h2>
+        <label>Слой
+          <select id="map_basemap">
+            <option value="osm">OpenStreetMap</option>
+            <option value="topo">OpenTopoMap (рельеф)</option>
+            <option value="sat">Esri World Imagery (спутник)</option>
+          </select>
+        </label>
+      </div>
     </section>
 
     <div id="loading" class="loading hidden">
@@ -128,12 +181,15 @@
     </div>
 
     <footer class="footer">
-      <p>Статическая версия · GitHub Pages · FSPL + knife-edge</p>
+      <p>Карты © OpenStreetMap / OpenTopoMap / Esri</p>
       <p><a href="https://github.com/DRAKON29/Grok_freqcalc" style="color:#3b82f6">Исходный код</a></p>
     </footer>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="js/radio.js"></script>
+  <script src="js/maps.js"></script>
   <script src="js/app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {

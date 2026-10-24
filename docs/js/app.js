@@ -1,13 +1,19 @@
-/* Static mobile UI – all calculations in-browser */
+/* Static UI + Leaflet maps */
 (function () {
   "use strict";
 
+  // ── Tabs ──────────────────────────────────────────────────────────
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      setTimeout(() => {
+        if (btn.dataset.tab === "map" && maps.main) maps.main.invalidateSize();
+        if (btn.dataset.tab === "link" && maps.link) maps.link.invalidateSize();
+        if (btn.dataset.tab === "coverage" && maps.coverage) maps.coverage.invalidateSize();
+      }, 50);
     });
   });
 
@@ -22,6 +28,7 @@
   bindRange("k_factor", "k_factor_val");
 
   function num(id) { return parseFloat(document.getElementById(id).value); }
+  function setNum(id, v) { document.getElementById(id).value = Number(v).toFixed(5); }
 
   function params() {
     return {
@@ -47,7 +54,98 @@
   const loading = document.getElementById("loading");
   function showLoading(on) { loading.classList.toggle("hidden", !on); }
 
-  document.getElementById("btn-link").addEventListener("click", () => {
+  // ── Maps ──────────────────────────────────────────────────────────
+  const maps = { main: null, link: null, coverage: null };
+  let placeMode = "tx";
+  let mainTxMarker = null;
+  let mainRxMarker = null;
+
+  function initMainMap() {
+    if (maps.main) return;
+    const p = params();
+    maps.main = MapHelper.createMap("map-main", [p.txLat, p.txLon], 11);
+    mainTxMarker = MapHelper.makeMarker(maps.main, p.txLat, p.txLon, "#dc2626", "Tx", true);
+    mainRxMarker = MapHelper.makeMarker(maps.main, p.rxLat, p.rxLon, "#2563eb", "Rx", true);
+
+    mainTxMarker.on("dragend", () => {
+      const ll = mainTxMarker.getLatLng();
+      setNum("tx_lat", ll.lat);
+      setNum("tx_lon", ll.lng);
+      updateReadouts();
+      mainTxMarker.setPopupContent("<b>Tx</b><br>" + ll.lat.toFixed(5) + ", " + ll.lng.toFixed(5));
+    });
+    mainRxMarker.on("dragend", () => {
+      const ll = mainRxMarker.getLatLng();
+      setNum("rx_lat", ll.lat);
+      setNum("rx_lon", ll.lng);
+      updateReadouts();
+      mainRxMarker.setPopupContent("<b>Rx</b><br>" + ll.lat.toFixed(5) + ", " + ll.lng.toFixed(5));
+    });
+
+    maps.main.on("click", (e) => {
+      if (placeMode === "tx") {
+        mainTxMarker.setLatLng(e.latlng);
+        setNum("tx_lat", e.latlng.lat);
+        setNum("tx_lon", e.latlng.lng);
+      } else {
+        mainRxMarker.setLatLng(e.latlng);
+        setNum("rx_lat", e.latlng.lat);
+        setNum("rx_lon", e.latlng.lng);
+      }
+      updateReadouts();
+    });
+
+    maps.main._pathLine = L.polyline(
+      [[p.txLat, p.txLon], [p.rxLat, p.rxLon]],
+      { color: "#3b82f6", weight: 2, opacity: 0.7 }
+    ).addTo(maps.main);
+
+    updateReadouts();
+  }
+
+  function updateReadouts() {
+    document.getElementById("read-tx").textContent =
+      num("tx_lat").toFixed(5) + ", " + num("tx_lon").toFixed(5);
+    document.getElementById("read-rx").textContent =
+      num("rx_lat").toFixed(5) + ", " + num("rx_lon").toFixed(5);
+    if (maps.main && maps.main._pathLine) {
+      maps.main._pathLine.setLatLngs([
+        [num("tx_lat"), num("tx_lon")],
+        [num("rx_lat"), num("rx_lon")],
+      ]);
+    }
+  }
+
+  ["tx_lat", "tx_lon", "rx_lat", "rx_lon"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", () => {
+      if (!mainTxMarker) return;
+      mainTxMarker.setLatLng([num("tx_lat"), num("tx_lon")]);
+      mainRxMarker.setLatLng([num("rx_lat"), num("rx_lon")]);
+      updateReadouts();
+    });
+  });
+
+  document.querySelectorAll(".btn-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".btn-chip").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      placeMode = btn.dataset.place;
+    });
+  });
+
+  document.getElementById("map_basemap").addEventListener("change", (e) => {
+    const key = e.target.value;
+    [maps.main, maps.link, maps.coverage].forEach((m) => {
+      if (m) MapHelper.setBasemap(m, key);
+    });
+  });
+
+  document.querySelector('.tab[data-tab="map"]').addEventListener("click", () => {
+    setTimeout(initMainMap, 60);
+  });
+
+  // ── Link calculation ──────────────────────────────────────────────
+  function runLink() {
     showLoading(true);
     setTimeout(() => {
       try {
@@ -70,32 +168,55 @@
         }
 
         const canvas = document.getElementById("profile-canvas");
-        // crisp on retina
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
-        canvas.width = Math.round((rect.width || 320) * dpr);
-        canvas.height = Math.round(200 * dpr);
-        canvas.style.width = (rect.width || 320) + "px";
-        canvas.style.height = "200px";
-        const ctx = canvas.getContext("2d");
-        ctx.scale(dpr, dpr);
-        // temporarily override width logic — drawProfile uses canvas.width
-        // so pass logical size via a wrapper
+        const w = rect.width || 320;
+        const h = 200;
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        canvas.style.width = w + "px";
+        canvas.style.height = h + "px";
         const logical = document.createElement("canvas");
-        logical.width = rect.width || 320;
-        logical.height = 200;
+        logical.width = w;
+        logical.height = h;
         RadioCalc.drawProfile(logical, result);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.drawImage(logical, 0, 0);
 
         document.getElementById("link-result").classList.remove("hidden");
+        setTimeout(() => {
+          if (!maps.link) {
+            maps.link = MapHelper.createMap(
+              "map-link",
+              [result.profile.lats[0], result.profile.lons[0]],
+              11
+            );
+            const bm = document.getElementById("map_basemap").value;
+            if (bm !== "osm") MapHelper.setBasemap(maps.link, bm);
+          }
+          MapHelper.showLink(
+            maps.link,
+            num("tx_lat"), num("tx_lon"),
+            num("rx_lat"), num("rx_lon"),
+            result.isCovered
+          );
+        }, 50);
       } catch (e) {
         alert("Ошибка: " + e.message);
       } finally {
         showLoading(false);
       }
     }, 30);
+  }
+
+  document.getElementById("btn-link").addEventListener("click", runLink);
+  document.getElementById("btn-link-from-map").addEventListener("click", () => {
+    document.querySelector('.tab[data-tab="link"]').click();
+    runLink();
   });
 
+  // ── Coverage ──────────────────────────────────────────────────────
   document.getElementById("btn-coverage").addEventListener("click", () => {
     showLoading(true);
     setTimeout(() => {
@@ -122,6 +243,14 @@
         ctx.drawImage(logical, 0, 0);
 
         document.getElementById("coverage-result").classList.remove("hidden");
+        setTimeout(() => {
+          if (!maps.coverage) {
+            maps.coverage = MapHelper.createMap("map-coverage", [p.txLat, p.txLon], 10);
+            const bm = document.getElementById("map_basemap").value;
+            if (bm !== "osm") MapHelper.setBasemap(maps.coverage, bm);
+          }
+          MapHelper.showCoverage(maps.coverage, p.txLat, p.txLon, cov);
+        }, 50);
       } catch (e) {
         alert("Ошибка: " + e.message);
       } finally {

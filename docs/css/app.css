@@ -262,3 +262,66 @@ label span {
   .metrics { grid-template-columns: repeat(4, 1fr); }
   .metric.wide { grid-column: span 2; }
 }
+
+/* Maps */
+.map-card { padding: 10px; }
+.map-box {
+  width: 100%;
+  height: 260px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1a2740;
+  z-index: 1;
+}
+.map-tall { height: 360px; }
+
+.map-mode {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.btn-chip {
+  flex: 1;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: var(--card2);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.btn-chip.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+.coord-readout {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: var(--text);
+  word-break: break-all;
+}
+
+/* Leaflet dark tweaks */
+.leaflet-container {
+  font: inherit;
+  background: #1a2740;
+}
+.leaflet-control-attribution {
+  font-size: 9px !important;
+  background: rgba(11,18,32,0.75) !important;
+  color: #8b9bb8 !important;
+}
+.leaflet-control-attribution a { color: #3b82f6 !important; }
+
+.marker-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-weight: 700;
+  font-size: 12px;
+  color: #fff;
+  text-shadow: 0 1px 2px #000;
+}
