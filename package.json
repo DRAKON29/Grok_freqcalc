@@ -14,7 +14,10 @@
     "dev": "next dev",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check": "bun run lint && bun run typecheck && bun run build"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "check": "bun run lint && bun run typecheck && bun run test && bun run build"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -74,12 +77,14 @@
     "@types/node": "^20.19.8",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "@vitest/coverage-v8": "5.0.5",
     "autoprefixer": "^10.4.21",
     "eslint": "^9.31.0",
     "eslint-config-next": "16.2.1",
     "prettier": "latest",
     "prettier-plugin-tailwindcss": "0.8.1",
     "tailwindcss": "3.4.18",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "5.0.5"
   }
 }
