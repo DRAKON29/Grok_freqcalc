@@ -43,3 +43,7 @@ src/components/radio — UI (калькулятор, карта, графики)
 ## Ветка
 
 `dev_union` на https://github.com/DRAKON29/Grok_freqcalc
+
+## Vercel
+
+Production branch: `dev_union`. Deploy trigger: 2026-10-25T00:26:16Z
