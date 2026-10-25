@@ -3,8 +3,8 @@
 // Калькулятор распространения радиосигнала. Вся математика — в src/lib/radio,
 // здесь только состояние полей, загрузка HGT-файлов и вызов движка.
 // Координаты вводятся вручную строго в СК-42: градусы B/L либо метры
-// Гаусса–Крюгера X/Y (с номером зоны в Y). Координаты ПРМ опциональны —
-// без них строится только круговая диаграмма зоны связи.
+// Гаусса–Крюгера X/Y (с номером зоны в Y). Обе станции — приёмопередатчики;
+// координаты станции B опциональны — без них только зона связи вокруг A.
 
 import {
   ArrowUpDown,
@@ -73,6 +73,11 @@ import {
 } from "@/lib/radio/engine";
 import { MapPicker } from "@/components/radio/map-picker";
 import { fmt, fmtDms, parseNum } from "@/lib/radio/format";
+import {
+  SIGNAL_COLORS,
+  SIGNAL_LABELS,
+  signalQuality,
+} from "@/lib/radio/signal";
 import { parseTrajectoryFile, type Trajectory } from "@/lib/radio/route";
 import {
   evaluateTrajectory,
@@ -953,7 +958,7 @@ export function RadioCalculator() {
             <CardTitle className="text-base">Координаты, СК-42</CardTitle>
             <CardDescription>
               Эллипсоид Красовского; переход в WGS-84 по ГОСТ Р 51794-2008.
-              ПРМ опционален — без него строится только зона связи.
+              Обе точки — приёмопередатчики (полный дуплексный обмен). Станция B опциональна — без неё строится только зона связи вокруг A.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -971,7 +976,7 @@ export function RadioCalculator() {
               <div className="grid grid-cols-2 gap-x-3 gap-y-4">
                 <NumberField
                   id="txB"
-                  label="ПРД: широта B"
+                  label="Станция A: широта B"
                   unit="°"
                   value={values.txB}
                   onChange={(v) => set("txB", v)}
@@ -980,7 +985,7 @@ export function RadioCalculator() {
                 />
                 <NumberField
                   id="txL"
-                  label="ПРД: долгота L"
+                  label="Станция A: долгота L"
                   unit="°"
                   value={values.txL}
                   onChange={(v) => set("txL", v)}
@@ -989,7 +994,7 @@ export function RadioCalculator() {
                 />
                 <NumberField
                   id="rxB"
-                  label="ПРМ: широта B (опц.)"
+                  label="Станция B: широта B (опц.)"
                   unit="°"
                   value={values.rxB}
                   onChange={(v) => set("rxB", v)}
@@ -998,7 +1003,7 @@ export function RadioCalculator() {
                 />
                 <NumberField
                   id="rxL"
-                  label="ПРМ: долгота L (опц.)"
+                  label="Станция B: долгота L (опц.)"
                   unit="°"
                   value={values.rxL}
                   onChange={(v) => set("rxL", v)}
@@ -1266,7 +1271,7 @@ export function RadioCalculator() {
           <CardHeader className="pb-2">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <CardTitle className="text-base">Зона связи вокруг ПРД</CardTitle>
+                <CardTitle className="text-base">Зона двусторонней связи вокруг станции A</CardTitle>
                 <CardDescription>
                   Центр — передатчик; север сверху; граница = запас на входе ПРМ ≥{" "}
                   {params ? fmt(params.fadeMarginDb, 0) : "—"} дБ
@@ -1351,7 +1356,7 @@ export function RadioCalculator() {
         {/* --- Профиль трассы --- */}
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Профиль трассы ПРД → ПРМ</CardTitle>
+            <CardTitle className="text-base">Профиль трассы A ↔ B (приёмопередатчики)</CardTitle>
             <CardDescription>
               {!rxOk
                 ? "Укажите координаты ПРМ для построения профиля"
@@ -1360,7 +1365,7 @@ export function RadioCalculator() {
           </CardHeader>
           <CardContent>
             {link ? (
-              <ProfileChart link={link} className="w-full text-foreground" />
+              <ProfileChart link={link} fadeMarginDb={params?.fadeMarginDb ?? 0} className="w-full text-foreground" />
             ) : linkError ? (
               <Placeholder text={linkError} warning />
             ) : !rxOk ? (
@@ -1374,17 +1379,28 @@ export function RadioCalculator() {
         {/* --- Бюджет линии --- */}
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Бюджет линии</CardTitle>
+            <CardTitle className="text-base">Бюджет двусторонней линии A ↔ B</CardTitle>
           </CardHeader>
           <CardContent>
             {link ? (
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  {link.ok ? (
-                    <Badge>Связь обеспечена</Badge>
-                  ) : (
-                    <Badge variant="destructive">Запаса нет</Badge>
-                  )}
+                  {(() => {
+                    const q = signalQuality(
+                      link.marginDb,
+                      params?.fadeMarginDb ?? 0
+                    );
+                    const style = {
+                      backgroundColor: SIGNAL_COLORS[q],
+                      color: "#fff",
+                      borderColor: SIGNAL_COLORS[q],
+                    };
+                    return (
+                      <Badge style={style}>
+                        {SIGNAL_LABELS[q]}
+                      </Badge>
+                    );
+                  })()}
                   <Badge variant="outline">
                     {fmt(link.distanceM / 1000, 2)} км
                   </Badge>
@@ -1909,6 +1925,7 @@ export function RadioCalculator() {
               <div className="space-y-3">
                 <VerticalChart
                   result={vertical}
+                  fadeMarginDb={params?.fadeMarginDb ?? 0}
                   className="w-full text-foreground"
                 />
                 <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">

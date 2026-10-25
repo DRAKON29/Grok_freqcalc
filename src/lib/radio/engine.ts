@@ -360,7 +360,10 @@ function safeEvaluatePoint(
 
 export interface CoverageRay {
   azDeg: number;
-  km: number; // дальность связи по азимуту
+  /** Дальность с запасом ≥ fadeMargin (уверенный сигнал), км */
+  km: number;
+  /** Дальность с запасом ≥ 0 (неустойчивый / на грани), км */
+  kmWeak: number;
   status: "ok" | "data" | "limit";
 }
 
@@ -396,61 +399,83 @@ export function scanCoverage(
   }
   const rays: CoverageRay[] = [];
 
+  const refine = (
+    azRad: number,
+    lo: number,
+    hi: number,
+    minMargin: number
+  ): number => {
+    for (let i = 0; i < 5; i++) {
+      const mid = (lo + hi) / 2;
+      const res = safeEvaluatePoint(tiles, txWgs, azRad, mid * 1000, params);
+      if (res.dataOk && res.margin >= minMargin) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
+
   for (let az = 0; az < 360; az += 5) {
     const azRad = (az * Math.PI) / 180;
-    let lastGood = 0;
+    let lastGood = 0; // margin >= fade
+    let lastWeak = 0; // margin >= 0
     let status: CoverageRay["status"] = "ok";
-    let failKm: number | null = null;
+    let failGoodKm: number | null = null;
+    let failWeakKm: number | null = null;
+    let dataFailKm: number | null = null;
 
     for (const km of ladder) {
       const res = safeEvaluatePoint(tiles, txWgs, azRad, km * 1000, params);
       if (!res.dataOk) {
         status = "data";
-        failKm = km;
+        dataFailKm = km;
         break;
       }
       if (res.margin >= params.fadeMarginDb) {
         lastGood = km;
+        lastWeak = km;
+      } else if (res.margin >= 0) {
+        lastWeak = km;
+        if (failGoodKm === null) failGoodKm = km;
       } else {
-        status = "ok";
-        failKm = km;
+        if (failGoodKm === null) failGoodKm = km;
+        if (failWeakKm === null) failWeakKm = km;
         break;
       }
     }
 
     let km = lastGood;
-    if (status === "ok" && failKm !== null && lastGood > 0) {
-      // уточнение границы бисекцией
-      let lo = lastGood;
-      let hi = failKm;
-      for (let i = 0; i < 4; i++) {
-        const mid = (lo + hi) / 2;
-        const res = safeEvaluatePoint(tiles, txWgs, azRad, mid * 1000, params);
-        if (res.dataOk && res.margin >= params.fadeMarginDb) lo = mid;
-        else hi = mid;
-      }
-      km = lo;
-    } else if (status === "ok" && failKm !== null && lastGood === 0) {
-      // даже минимальная дальность недоступна
-      let lo = 0;
-      let hi = failKm;
-      for (let i = 0; i < 4; i++) {
-        const mid = (lo + hi) / 2;
-        const res = safeEvaluatePoint(tiles, txWgs, azRad, mid * 1000, params);
-        if (res.dataOk && res.margin >= params.fadeMarginDb) lo = mid;
-        else hi = mid;
-      }
-      km = lo;
-    } else if (status === "data" && lastGood === 0) {
-      km = 0;
+    let kmWeak = lastWeak;
+
+    if (failGoodKm !== null && lastGood < failGoodKm) {
+      km = refine(azRad, lastGood, failGoodKm, params.fadeMarginDb);
+    } else if (status !== "data" && failGoodKm === null && lastGood > 0) {
+      // весь ladder зелёный — уточним до analysisKm
+      km = lastGood;
     }
 
-    if (status === "ok" && failKm === null) {
+    if (failWeakKm !== null && lastWeak < failWeakKm) {
+      kmWeak = refine(azRad, lastWeak, failWeakKm, 0);
+    } else if (dataFailKm !== null && lastWeak < dataFailKm && lastWeak > 0) {
+      kmWeak = refine(azRad, lastWeak, dataFailKm, 0);
+    }
+
+    if (status === "data" && lastGood === 0 && lastWeak === 0) {
+      km = 0;
+      kmWeak = 0;
+    }
+
+    if (status === "ok" && dataFailKm === null && failWeakKm === null && lastGood >= analysisKm * 0.98) {
       status = "limit";
       km = analysisKm;
+      kmWeak = Math.max(kmWeak, analysisKm);
+    } else if (status === "ok" && dataFailKm === null && failGoodKm === null) {
+      status = "limit";
+      km = analysisKm;
+      kmWeak = Math.max(kmWeak, analysisKm);
     }
 
-    rays.push({ azDeg: az, km, status });
+    kmWeak = Math.max(kmWeak, km);
+    rays.push({ azDeg: az, km, kmWeak, status });
   }
 
   let area = 0;

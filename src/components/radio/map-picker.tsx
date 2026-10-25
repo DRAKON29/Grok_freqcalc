@@ -1,6 +1,6 @@
 "use client";
 
-// Карта выбора точек ПРД/ПРМ и отображения траектории ПРМ.
+// Карта выбора точек A/B и отображения траектории B.
 // Leaflet подключается динамически (только в браузере);
 // слои: «Схема» — Google Map, «Спутник» — Google Satellite,
 // «Гибрид» — Google Hybrid.
@@ -145,7 +145,7 @@ export function MapPicker({
     })();
   }, [layer, ready]);
 
-  // --- Маркеры ПРД/ПРМ ---
+  // --- Маркеры A/B ---
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
@@ -181,12 +181,12 @@ export function MapPicker({
         }
       };
 
-      setMarker(txMarkerRef, tx, "TX", "#16a34a", "ПРД");
-      setMarker(rxMarkerRef, rx, "RX", "#2563eb", "ПРМ");
+      setMarker(txMarkerRef, tx, "TX", "#16a34a", "A");
+      setMarker(rxMarkerRef, rx, "RX", "#2563eb", "B");
     })();
   }, [tx, rx, ready]);
 
-  // --- Траектория ПРМ ---
+  // --- Траектория B ---
   useEffect(() => {
     const map = mapRef.current;
     const group = trajLayerRef.current;
@@ -289,7 +289,7 @@ export function MapPicker({
             )}
             onClick={onChangePickMode}
           >
-            {pickMode === "tx" ? "ПРД" : "ПРМ"}
+            {pickMode === "tx" ? "A" : "B"}
           </Button>
         </div>
       </div>

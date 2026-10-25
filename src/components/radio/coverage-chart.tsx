@@ -1,10 +1,11 @@
-// Круговая диаграмма зоны связи: центр — передатчик, север сверху.
-// Чистый SVG (без библиотек графиков): 72 луча по 5°, кольца расстояний,
-// метки румбов, отметки наилучшего/наихудшего азимута и позиция ПРМ.
+// Круговая диаграмма зоны связи.
+// Зелёная зона — уверенный сигнал (запас ≥ fadeMargin).
+// Жёлтая — неустойчивый (0 ≤ запас < fadeMargin).
+// Красная (фон за пределами) — связи нет.
 
-import type { CoverageResult } from "@/lib/radio/engine";
+import type { CoverageResult, PathGeom } from "@/lib/radio/engine";
 import { fmt } from "@/lib/radio/format";
-import type { PathGeom } from "@/lib/radio/engine";
+import { SIGNAL_COLORS, SIGNAL_LABELS } from "@/lib/radio/signal";
 
 const SIZE = 460;
 const C = SIZE / 2;
@@ -19,23 +20,33 @@ interface CoverageChartProps {
   className?: string;
 }
 
-export function CoverageChart({ coverage, geom, beamWidthDeg, className }: CoverageChartProps) {
+export function CoverageChart({
+  coverage,
+  geom,
+  beamWidthDeg,
+  className,
+}: CoverageChartProps) {
   const rMax = coverage.analysisKm;
   const pxPerKm = R_PX / rMax;
 
   const xy = (azDeg: number, km: number): [number, number] => {
-    // Азимут: 0° — север, по часовой стрелке; в SVG y растёт вниз.
     const a = (azDeg * Math.PI) / 180;
     const r = Math.max(0, Math.min(km, rMax)) * pxPerKm;
     return [C + r * Math.sin(a), C - r * Math.cos(a)];
   };
 
-  // Заполненный полигон зоны (лучи через 5°).
-  const pts = coverage.rays.map((ray) => xy(ray.azDeg, ray.km));
-  const poly = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const polyFrom = (getKm: (r: (typeof coverage.rays)[0]) => number) =>
+    coverage.rays
+      .map((ray) => {
+        const [x, y] = xy(ray.azDeg, getKm(ray));
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ");
+
+  const polyWeak = polyFrom((r) => r.kmWeak ?? r.km);
+  const polyGood = polyFrom((r) => r.km);
 
   const rings = [0.25, 0.5, 0.75, 1].map((f) => f * rMax);
-
   const best = xy(coverage.bestAz, coverage.bestKm);
   const worst = xy(coverage.worstAz, coverage.worstKm);
 
@@ -43,9 +54,8 @@ export function CoverageChart({ coverage, geom, beamWidthDeg, className }: Cover
   let rxClipped = false;
   if (geom) {
     const km = geom.distanceM / 1000;
-    if (km <= rMax) {
-      rxMarker = xy(geom.fwdAzDeg, km);
-    } else {
+    if (km <= rMax) rxMarker = xy(geom.fwdAzDeg, km);
+    else {
       rxClipped = true;
       rxMarker = xy(geom.fwdAzDeg, rMax);
     }
@@ -55,10 +65,13 @@ export function CoverageChart({ coverage, geom, beamWidthDeg, className }: Cover
     <svg
       viewBox={`0 0 ${SIZE} ${SIZE}`}
       role="img"
-      aria-label={`Зона связи, радиус анализа ${fmt(rMax, 1)} км`}
+      aria-label={`Зона двусторонней связи, радиус анализа ${fmt(rMax, 1)} км`}
       className={className}
     >
-      {/* кольца расстояний */}
+      {/* фон — зона «связи нет» */}
+      <circle cx={C} cy={C} r={R_PX} fill={SIGNAL_COLORS.red} fillOpacity={0.12} />
+
+      {/* кольца */}
       {rings.map((km, i) => (
         <g key={i}>
           <circle
@@ -82,121 +95,143 @@ export function CoverageChart({ coverage, geom, beamWidthDeg, className }: Cover
         </g>
       ))}
 
-      {/* лучи-метки каждые 30° и румбы */}
-      {Array.from({ length: 12 }, (_, i) => i * 30).map((az) => {
+      {/* жёлтая зона — неустойчивый сигнал */}
+      <polygon
+        points={polyWeak}
+        fill={SIGNAL_COLORS.yellow}
+        fillOpacity={0.35}
+        stroke={SIGNAL_COLORS.yellow}
+        strokeOpacity={0.7}
+        strokeWidth="1"
+      />
+
+      {/* зелёная зона — уверенный сигнал */}
+      <polygon
+        points={polyGood}
+        fill={SIGNAL_COLORS.green}
+        fillOpacity={0.45}
+        stroke={SIGNAL_COLORS.green}
+        strokeOpacity={0.9}
+        strokeWidth="1.5"
+      />
+
+      {/* сектор ДН */}
+      {beamWidthDeg != null && beamWidthDeg > 0 && beamWidthDeg < 360 && (
+        <path
+          d={beamPath(0, beamWidthDeg, R_PX)}
+          fill="currentColor"
+          fillOpacity="0.06"
+          stroke="currentColor"
+          strokeOpacity="0.25"
+          strokeWidth="1"
+        />
+      )}
+
+      {/* оси румбов */}
+      {[0, 90, 180, 270].map((az) => {
         const [x, y] = xy(az, rMax);
-        const [x0, y0] = xy(az, 0);
-        const labelR = rMax;
-        const [lx, ly] = xy(az, labelR + 0.1);
         return (
           <g key={az}>
             <line
-              x1={x0}
-              y1={y0}
+              x1={C}
+              y1={C}
               x2={x}
               y2={y}
               stroke="currentColor"
-              strokeOpacity={0.08}
+              strokeOpacity="0.2"
             />
             <text
-              x={lx}
-              y={ly}
-              fontSize="11"
-              fontWeight={RUMB[az] ? 700 : 400}
+              x={C + (x - C) * 1.08}
+              y={C + (y - C) * 1.08}
+              fontSize="12"
+              fontWeight="600"
               textAnchor="middle"
               dominantBaseline="middle"
               fill="currentColor"
-              fillOpacity={RUMB[az] ? 0.9 : 0.45}
+              fillOpacity="0.7"
             >
-              {RUMB[az] ?? String(az)}
+              {RUMB[az]}
             </text>
           </g>
         );
       })}
 
-      {/* зона связи */}
-      <polygon points={poly} fill="currentColor" fillOpacity="0.18" />
-      <polygon
-        points={poly}
-        fill="none"
-        stroke="currentColor"
-        strokeOpacity="0.7"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
+      {/* best / worst */}
+      <circle cx={best[0]} cy={best[1]} r="4" fill={SIGNAL_COLORS.green} />
+      <circle cx={worst[0]} cy={worst[1]} r="4" fill={SIGNAL_COLORS.yellow} />
 
-      {/* наилучший и наихудший азимуты */}
-      <line
-        x1={C}
-        y1={C}
-        x2={best[0]}
-        y2={best[1]}
-        stroke="currentColor"
-        strokeOpacity="0.5"
-        strokeDasharray="4 4"
-      />
-      <circle cx={best[0]} cy={best[1]} r="3.5" fill="currentColor" fillOpacity="0.85" />
-      <line
-        x1={C}
-        y1={C}
-        x2={worst[0]}
-        y2={worst[1]}
-        stroke="currentColor"
-        strokeOpacity="0.22"
-        strokeDasharray="2 4"
-      />
-
-      {/* приёмник */}
-      {rxMarker ? (
+      {/* второй приёмопередатчик */}
+      {rxMarker && (
         <g>
-          <line
-            x1={C}
-            y1={C}
-            x2={rxMarker[0]}
-            y2={rxMarker[1]}
+          <circle
+            cx={rxMarker[0]}
+            cy={rxMarker[1]}
+            r="6"
+            fill="none"
             stroke="currentColor"
-            strokeOpacity="0.45"
-            strokeWidth="1.2"
+            strokeWidth="2"
+            strokeOpacity="0.9"
           />
           <circle
             cx={rxMarker[0]}
             cy={rxMarker[1]}
-            r="5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeDasharray={rxClipped ? "2 2" : undefined}
-            strokeOpacity="0.9"
+            r="2.5"
+            fill="currentColor"
+            fillOpacity="0.9"
           />
-        </g>
-      ) : null}
-
-      {/* ширина луча — две линии от центра */}
-      {beamWidthDeg && beamWidthDeg > 0 && beamWidthDeg < 360 ? (() => {
-        const centerAz = geom?.fwdAzDeg ?? 0;
-        const half = beamWidthDeg / 2;
-        const [x1, y1] = xy(centerAz - half, rMax);
-        const [x2, y2] = xy(centerAz + half, rMax);
-        return (
-          <g>
-            <line x1={C} y1={C} x2={x1} y2={y1} stroke="currentColor" strokeOpacity="0.3" strokeWidth="1" strokeDasharray="4 3" />
-            <line x1={C} y1={C} x2={x2} y2={y2} stroke="currentColor" strokeOpacity="0.3" strokeWidth="1" strokeDasharray="4 3" />
+          {rxClipped && (
             <text
-              x={(C + x1) / 2 + 4}
-              y={(C + y1) / 2}
-              fontSize="9"
+              x={rxMarker[0] + 8}
+              y={rxMarker[1] - 8}
+              fontSize="10"
               fill="currentColor"
-              fillOpacity="0.45"
+              fillOpacity="0.6"
             >
-              {fmt(beamWidthDeg, 0)}°
+              за пределами
+            </text>
+          )}
+        </g>
+      )}
+
+      {/* центр — станция A */}
+      <circle cx={C} cy={C} r="5" fill="currentColor" fillOpacity="0.9" />
+      <circle cx={C} cy={C} r="2" fill="var(--background, #fff)" />
+
+      {/* легенда */}
+      <g transform={`translate(12, ${SIZE - 52})`}>
+        {(
+          [
+            ["green", SIGNAL_LABELS.green],
+            ["yellow", SIGNAL_LABELS.yellow],
+            ["red", SIGNAL_LABELS.red],
+          ] as const
+        ).map(([k, label], i) => (
+          <g key={k} transform={`translate(0, ${i * 14})`}>
+            <rect
+              width="10"
+              height="10"
+              rx="2"
+              fill={SIGNAL_COLORS[k]}
+              fillOpacity={0.85}
+            />
+            <text x="14" y="9" fontSize="10" fill="currentColor" fillOpacity="0.75">
+              {label}
             </text>
           </g>
-        );
-      })() : null}
-
-      {/* передатчик в центре */}
-      <circle cx={C} cy={C} r="4.5" fill="currentColor" />
-      <circle cx={C} cy={C} r="8" fill="none" stroke="currentColor" strokeOpacity="0.4" />
+        ))}
+      </g>
     </svg>
   );
+}
+
+function beamPath(centerAz: number, widthDeg: number, r: number): string {
+  const half = widthDeg / 2;
+  const a0 = ((centerAz - half) * Math.PI) / 180;
+  const a1 = ((centerAz + half) * Math.PI) / 180;
+  const x0 = C + r * Math.sin(a0);
+  const y0 = C - r * Math.cos(a0);
+  const x1 = C + r * Math.sin(a1);
+  const y1 = C - r * Math.cos(a1);
+  const large = widthDeg > 180 ? 1 : 0;
+  return `M ${C} ${C} L ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)} Z`;
 }
