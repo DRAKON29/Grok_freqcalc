@@ -273,15 +273,6 @@ export function RadioCalculator() {
     }, 50);
   };
 
-  // Пересчёт траектории при появлении HGT / смене станции A / параметров
-  useEffect(() => {
-    if (!trajectory || !params || !txWgs || !points.tx) return;
-    // Не считаем, если нет ни тайлов, ни синтетики — будет та же ошибка
-    if (tiles.size === 0 && !useSynthetic) return;
-    calculateTrajectory(trajectory);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tiles, txWgs, params, useSynthetic, trajectory]);
-
   // --- Очистка траектории ---
   const clearTrajectory = () => {
     setTrajectory(null);
@@ -537,6 +528,14 @@ export function RadioCalculator() {
       useSynthetic,
     };
   }, [parsed, freqMode, useSynthetic]);
+
+  // Пересчёт траектории при появлении HGT / смене станции A / параметров
+  useEffect(() => {
+    if (!trajectory || !params || !txWgs || !points.tx) return;
+    if (tiles.size === 0 && !useSynthetic) return;
+    calculateTrajectory(trajectory);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiles, txWgs, params, useSynthetic, trajectory]);
 
   // --- параметры обратного канала (частота ПРМ) ---
   const returnParams: RadioParams | null = useMemo(() => {
