@@ -104,14 +104,14 @@ const DEFAULTS: Record<string, string> = {
   fadeMarginDb: "10",
   kFactor: "1,33",
   beamWidthDeg: "",
-  txB: "55,7558",
-  txL: "37,6173",
-  rxB: "55,7997",
-  rxL: "38,0166",
-  txX: "6181399",
-  txY: "7419639",
-  rxX: "6223358",
-  rxY: "7455803",
+  txB: "50,5000",
+  txL: "36,8500",
+  rxB: "50,4872",
+  rxL: "36,8385",
+  txX: "5600000",
+  txY: "7400000",
+  rxX: "5600000",
+  rxY: "7400000",
   vertDistKm: "5",
   vertAzDeg: "0",
 };
@@ -272,6 +272,15 @@ export function RadioCalculator() {
       }
     }, 50);
   };
+
+  // Пересчёт траектории при появлении HGT / смене станции A / параметров
+  useEffect(() => {
+    if (!trajectory || !params || !txWgs || !points.tx) return;
+    // Не считаем, если нет ни тайлов, ни синтетики — будет та же ошибка
+    if (tiles.size === 0 && !useSynthetic) return;
+    calculateTrajectory(trajectory);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tiles, txWgs, params, useSynthetic, trajectory]);
 
   // --- Очистка траектории ---
   const clearTrajectory = () => {
@@ -1727,6 +1736,20 @@ export function RadioCalculator() {
               </div>
             )}
 
+            
+            {trajectory && tiles.size > 0 && txWgs && !tiles.has(tileKeyAt(txWgs.lat, txWgs.lon)) && !useSynthetic && (
+              <Alert variant="destructive">
+                <TriangleAlert className="h-4 w-4" />
+                <AlertTitle>Нет HGT у станции A</AlertTitle>
+                <AlertDescription className="text-xs">
+                  Станция A ({fmt(txWgs.lat, 4)}°, {fmt(txWgs.lon, 4)}°) требует тайл{" "}
+                  <span className="font-mono">{tileKeyAt(txWgs.lat, txWgs.lon)}.hgt</span>.
+                  Сейчас загружены: {[...tiles.keys()].join(", ") || "—"}.
+                  Укажите координаты A в зоне загруженных тайлов или загрузите нужный .hgt.
+                </AlertDescription>
+              </Alert>
+            )}
+
             {trajectoryWarnings.length > 0 && (
               <Alert>
                 <TriangleAlert className="h-4 w-4" />
@@ -1768,7 +1791,7 @@ export function RadioCalculator() {
                   </Badge>
                   {trajectoryResult.dataCount > 0 && (
                     <Badge variant="secondary" className="px-2 py-0 text-[11px]">
-                      Нет HGT: {trajectoryResult.dataCount}
+                      Нет HGT на трассе/у A: {trajectoryResult.dataCount}
                     </Badge>
                   )}
                   {trajectoryResult.errorCount > 0 && (
@@ -1891,7 +1914,7 @@ export function RadioCalculator() {
             )}
 
             {!trajectory && !trajectoryBusy && !trajectoryError && (
-              <Placeholder text="Загрузите файл траектории .rt (JSON-формат). Траектория отобразится на карте, а расчёт выполнится по всем точкам." />
+              <Placeholder text="Загрузите .rt (lat, lon, altitude AMSL). Станция A должна быть в зоне загруженных HGT (например N50E036 для маршрута у 50°N 36°E). После загрузки HGT расчёт перезапустится сам." />
             )}
           </CardContent>
         </Card>

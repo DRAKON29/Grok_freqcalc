@@ -109,7 +109,9 @@ export function buildProfileRaw(
   distanceM: number,
   nPoints: number,
   kFactor: number,
-  useSynthetic = false
+  useSynthetic = false,
+  /** Для траектории: не требовать HGT на конце (высота антенны из AMSL файла). */
+  softRxEndpoint = false
 ): RawProfile {
   const n = Math.max(2, Math.round(nPoints));
   const pts: RawProfilePoint[] = [];
@@ -117,6 +119,7 @@ export function buildProfileRaw(
   const missingTiles = new Set<string>();
   let gapCount = 0;
   let lastValid = 0;
+  let haveValid = false;
 
   for (let i = 0; i <= n; i++) {
     const d = (distanceM * i) / n;
@@ -128,22 +131,33 @@ export function buildProfileRaw(
     }
     if (h === null) {
       missingTiles.add(key);
-      if (i === 0 || i === n) {
+      const isTx = i === 0;
+      const isRx = i === n;
+      if (isTx) {
         throw new Error(
-          `Нет данных HGT в ${i === 0 ? "точке ПРД" : "точке ПРМ"} — нужен файл ${key}.hgt (или включите синтетический рельеф)`
+          `Нет данных HGT у станции A (${p.lat.toFixed(4)}°, ${p.lon.toFixed(4)}°) — нужен файл ${key}.hgt`
         );
       }
+      if (isRx && !softRxEndpoint) {
+        throw new Error(
+          `Нет данных HGT у станции B (${p.lat.toFixed(4)}°, ${p.lon.toFixed(4)}°) — нужен файл ${key}.hgt`
+        );
+      }
+      // середина или мягкий конец: берём ближайшую известную высоту
+      const fill = haveValid ? lastValid : 0;
       gapCount++;
-      pts.push({ d, h: lastValid, hc: 0, valid: false });
+      pts.push({ d, h: fill, hc: 0, valid: false });
     } else {
       lastValid = h;
-      if (sampleHeight(tiles, p.lat, p.lon) === null && useSynthetic) {
-        // синтетика — не считаем тайл «использованным»
-      } else {
-        usedTiles.add(key);
-      }
+      haveValid = true;
+      usedTiles.add(key);
       pts.push({ d, h, hc: 0, valid: true });
     }
+  }
+
+  // Если конец без HGT (softRx) — экстраполируем с предпоследней валидной
+  if (softRxEndpoint && pts.length > 1 && !pts[n].valid && haveValid) {
+    pts[n].h = lastValid;
   }
 
   const D = distanceM;
@@ -727,7 +741,8 @@ export function evaluateTrajectory(
         D,
         nPts,
         params.kFactor,
-        !!params.useSynthetic
+        !!params.useSynthetic,
+        true // softRx: высота B из altitude AMSL файла
       );
       let terrain = sampleHeight(tiles, tp.lat, tp.lon);
       if (terrain === null && params.useSynthetic) {
