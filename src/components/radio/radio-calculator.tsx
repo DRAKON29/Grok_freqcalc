@@ -200,8 +200,6 @@ export function RadioCalculator() {
         lon,
         DEFAULT_HELMERT_SK42_WGS84
       );
-      const dmsB = fmtDms(sk42.B, "lat");
-      const dmsL = fmtDms(sk42.L, "lon");
       if (pickMode === "tx") {
         set("txB", String(sk42.B));
         set("txL", String(sk42.L));
@@ -231,46 +229,13 @@ export function RadioCalculator() {
       const parsed = parseTrajectoryFile(file.name, text);
       setTrajectoryWarnings(parsed.warnings);
       setTrajectoryError(parsed.error);
+      // Пересчёт выполнится автоматически через useEffect,
+      // реагирующий на изменение trajectory / tiles / params.
+      // Прямой вызов calculateTrajectory здесь создавал бы риск
+      // обращения к переменной до её инициализации (TDZ).
       setTrajectory(parsed.trajectory);
-      if (parsed.trajectory && params && txWgs && points.tx) {
-        calculateTrajectory(parsed.trajectory);
-      }
     };
     reader.readAsText(file);
-  };
-
-  // --- Расчёт радиолинии по всем точкам траектории ---
-  const calculateTrajectory = (traj: Trajectory) => {
-    if (!params || !txWgs || !points.tx) return;
-    setTrajectoryBusy(true);
-    setTrajectoryResult(null);
-    // Вычисляем в микротаске, чтобы UI обновился
-    setTimeout(() => {
-      try {
-        if (!points.tx) return;
-        const result = evaluateTrajectory(
-          tiles,
-          txWgs,
-          points.tx,
-          {
-            points: traj.points.map((p) => ({
-              lat: p.lat,
-              lon: p.lon,
-              altitudeM: p.altitudeM,
-            })),
-            tripodHeightM: traj.tripodHeightM,
-          },
-          params
-        );
-        setTrajectoryResult(result);
-      } catch (e) {
-        setTrajectoryError(
-          e instanceof Error ? e.message : "Ошибка расчёта траектории"
-        );
-      } finally {
-        setTrajectoryBusy(false);
-      }
-    }, 50);
   };
 
   // --- Очистка траектории ---
@@ -529,13 +494,47 @@ export function RadioCalculator() {
     };
   }, [parsed, freqMode, useSynthetic]);
 
-  // Пересчёт траектории при появлении HGT / смене станции A / параметров
+  // Пересчёт траектории при появлении HGT / смене станции A / параметров.
+  // Эффект самодостаточен: все используемые значения — в зависимостях,
+  // устаревшие (незавершённые) расчёты отменяются через cancelled/очистку таймера.
   useEffect(() => {
     if (!trajectory || !params || !txWgs || !points.tx) return;
     if (tiles.size === 0 && !useSynthetic) return;
-    calculateTrajectory(trajectory);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tiles, txWgs, params, useSynthetic, trajectory]);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      setTrajectoryBusy(true);
+      try {
+        const result = evaluateTrajectory(
+          tiles,
+          txWgs,
+          points.tx!,
+          {
+            points: trajectory.points.map((p) => ({
+              lat: p.lat,
+              lon: p.lon,
+              altitudeM: p.altitudeM,
+            })),
+            tripodHeightM: trajectory.tripodHeightM,
+          },
+          params
+        );
+        if (!cancelled) setTrajectoryResult(result);
+      } catch (e) {
+        if (!cancelled) {
+          setTrajectoryError(
+            e instanceof Error ? e.message : "Ошибка расчёта траектории"
+          );
+        }
+      } finally {
+        if (!cancelled) setTrajectoryBusy(false);
+      }
+    }, 50);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [tiles, txWgs, params, useSynthetic, trajectory, points]);
 
   // --- параметры обратного канала (частота ПРМ) ---
   const returnParams: RadioParams | null = useMemo(() => {
@@ -565,24 +564,30 @@ export function RadioCalculator() {
     }
   }, [points]);
 
-  const link: LinkResult | null = useMemo(() => {
+  const linkResult = useMemo(() => {
     if (!geom || !params) return null;
     try {
-      return evaluateLink(tiles, geom, params);
-    } catch {
-      return null;
+      return { result: evaluateLink(tiles, geom, params) as LinkResult, error: null };
+    } catch (e) {
+      return {
+        result: null as LinkResult | null,
+        error: e instanceof Error ? e.message : "Ошибка расчёта трассы",
+      };
     }
   }, [tiles, geom, params]);
 
-  const linkError = useMemo(() => {
-    if (!geom || !params || link) return null;
-    try {
-      evaluateLink(tiles, geom, params);
-      return null;
-    } catch (e) {
-      return e instanceof Error ? e.message : "Ошибка расчёта трассы";
+  // Одна из возможных ошибок — «недостаточно тайлов рельефа»: добавляем подсказку.
+  const linkError: string | null = useMemo(() => {
+    if (!linkResult) return null;
+    const base = linkResult.error ?? null;
+    if (base && /тайл|tile/i.test(base)) {
+      return `${base} Загрузите HGT-файлы для требуемой области или включите синтетический рельеф.`;
     }
-  }, [tiles, geom, params, link]);
+    return base;
+  }, [linkResult]);
+
+  // Совместимость: далее по JSX используется имя `link` как LinkResult | null
+  const link: LinkResult | null = linkResult?.result ?? null;
 
   // --- бюджет на краях диапазона ПРД ---
   const linkLow = useMemo(() => {
@@ -1624,7 +1629,7 @@ export function RadioCalculator() {
                     </div>
                   )}
 
-                {link.obstacles.length > 0 && (
+                {link && link.obstacles.length > 0 && (
                   <div className="rounded-lg bg-muted/50 p-3 text-xs">
                     <p className="mb-1 font-medium">Препятствия над линией визирования (v &gt; 0):</p>
                     <ul className="space-y-0.5 text-muted-foreground">

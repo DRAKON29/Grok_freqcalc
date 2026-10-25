@@ -85,7 +85,11 @@ export function MapPicker({
   const [ready, setReady] = useState(false);
   const [layer, setLayer] = useState<MapLayerKind>("scheme");
 
-  onPickRef.current = onPick;
+  // Держим ссылку на самый свежий колбэк onPick (паттерн "latest ref"),
+  // чтобы обработчики клика карты не замыкались на устаревшей версии.
+  useEffect(() => {
+    onPickRef.current = onPick;
+  }, [onPick]);
 
   // --- Инициализация карты (только на клиенте) ---
   useEffect(() => {
