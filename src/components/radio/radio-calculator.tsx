@@ -1642,11 +1642,11 @@ export function RadioCalculator() {
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base">
               <Route className="h-4 w-4 text-muted-foreground" />
-              Траектория ПРМ
+              Траектория станции B
             </CardTitle>
             <CardDescription>
-              Загрузите файл траектории (.rt) для расчёта радиолинии ПРД → ПРМ
-              в каждой точке.
+              Файл .rt / JSON: lat, lon и altitude (высота над уровнем моря, м)
+              в каждой точке. Высота AMSL используется в расчёте двусторонней связи A↔B.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -1672,6 +1672,17 @@ export function RadioCalculator() {
                   <Badge variant="secondary" className="px-2 py-0 text-[11px]">
                     {trajectory.fileName} ({trajectory.points.length} точек)
                   </Badge>
+                  <Badge variant="outline" className="px-2 py-0 text-[11px]">
+                    H AMSL:{" "}
+                    {fmt(Math.min(...trajectory.points.map((pt) => pt.altitudeM)), 0)}
+                    …
+                    {fmt(Math.max(...trajectory.points.map((pt) => pt.altitudeM)), 0)} м
+                  </Badge>
+                  {trajectory.tripodHeightM != null && (
+                    <Badge variant="outline" className="px-2 py-0 text-[11px]">
+                      + штатив {fmt(trajectory.tripodHeightM, 1)} м
+                    </Badge>
+                  )}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1684,6 +1695,37 @@ export function RadioCalculator() {
                 </>
               )}
             </div>
+
+            {trajectory && !trajectoryResult && !trajectoryBusy && (
+              <div className="max-h-40 overflow-y-auto rounded-lg border text-xs">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b bg-muted/40 text-left text-muted-foreground">
+                      <th className="px-2 py-1.5 font-medium">№</th>
+                      <th className="px-2 py-1.5 font-medium">Широта</th>
+                      <th className="px-2 py-1.5 font-medium">Долгота</th>
+                      <th className="px-2 py-1.5 font-medium">Высота AMSL</th>
+                      <th className="px-2 py-1.5 font-medium">Антенна AMSL</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trajectory.points.map((pt, i) => (
+                      <tr key={i} className="border-b border-border/40">
+                        <td className="px-2 py-1 font-mono">{i + 1}</td>
+                        <td className="px-2 py-1 tabular-nums">{fmt(pt.lat, 5)}°</td>
+                        <td className="px-2 py-1 tabular-nums">{fmt(pt.lon, 5)}°</td>
+                        <td className="px-2 py-1 tabular-nums font-medium">
+                          {fmt(pt.altitudeM, 0)} м
+                        </td>
+                        <td className="px-2 py-1 tabular-nums">
+                          {fmt(pt.altitudeM + (trajectory.tripodHeightM ?? 0), 0)} м
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             {trajectoryWarnings.length > 0 && (
               <Alert>
@@ -1757,6 +1799,9 @@ export function RadioCalculator() {
                           Долгота
                         </th>
                         <th className="sticky top-0 bg-muted/95 px-2 py-1.5 font-medium">
+                          H AMSL
+                        </th>
+                        <th className="sticky top-0 bg-muted/95 px-2 py-1.5 font-medium">
                           Дальн.
                         </th>
                         <th className="sticky top-0 bg-muted/95 px-2 py-1.5 font-medium">
@@ -1786,6 +1831,9 @@ export function RadioCalculator() {
                           </td>
                           <td className="px-2 py-1 tabular-nums">
                             {fmt(p.lon, 4)}°
+                          </td>
+                          <td className="px-2 py-1 tabular-nums font-medium">
+                            {fmt(p.altitudeM, 0)} м
                           </td>
                           <td className="px-2 py-1 tabular-nums">
                             {fmt(p.distanceM / 1000, 2)} км

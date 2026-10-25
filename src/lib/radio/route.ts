@@ -1,16 +1,21 @@
-// Парсер файла траектории движения ПРМ. Формат (JSON):
+// Парсер файла траектории движения станции B (приёмопередатчик).
+// Формат (JSON / .rt):
 // {
 //   "route": { "points": [ { "altitude": 204, "lat": 50.487, "lon": 36.838, "speed": 120 }, ... ] },
 //   "tripodHeight": 4
 // }
-// lat/lon — WGS-84 (градусы), altitude — высота приёмника над уровнем моря (м),
-// speed — опционально (м/с), tripodHeight — высота штатива/установки антенны (м).
+// lat/lon — WGS-84 (градусы).
+// altitude — высота над уровнем моря (м), используется в расчёте как абсолютная
+//            высота антенны (AMSL). Допускаются алиасы: alt, height, elevation.
+// tripodHeight — дополнительная высота антенны над точкой altitude (м), суммируется.
+// speed — опционально (м/с).
 
 export interface TrajectoryPoint {
-  lat: number; // WGS-84, градусы
-  lon: number; // WGS-84, градусы
-  altitudeM: number; // высота над уровнем моря, м
-  speedMs: number | null; // опционально
+  lat: number;
+  lon: number;
+  /** Высота над уровнем моря (м), из файла */
+  altitudeM: number;
+  speedMs: number | null;
 }
 
 export interface Trajectory {
@@ -31,6 +36,41 @@ function finite(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+function asFiniteNumber(v: unknown): number | null {
+  if (finite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v.replace(",", "."));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Попытка починить JSON без внешней обёртки { ... }. */
+function tryParseJson(text: string): unknown {
+  const trimmed = text.replace(/^\uFEFF/, "").trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    /* try wrap */
+  }
+  try {
+    return JSON.parse(`{${trimmed}}`);
+  } catch {
+    /* try if only route array fragment */
+  }
+  throw new Error("not json");
+}
+
+function readAltitude(p: Record<string, unknown>): number | null {
+  for (const key of ["altitude", "alt", "height", "elevation", "h", "alt_msl"]) {
+    if (key in p) {
+      const n = asFiniteNumber(p[key]);
+      if (n !== null) return n;
+    }
+  }
+  return null;
+}
+
 /** Разбор и валидация JSON-файла траектории. */
 export function parseTrajectoryFile(
   fileName: string,
@@ -40,7 +80,7 @@ export function parseTrajectoryFile(
 
   let data: unknown;
   try {
-    data = JSON.parse(text);
+    data = tryParseJson(text);
   } catch {
     return {
       trajectory: null,
@@ -78,12 +118,14 @@ export function parseTrajectoryFile(
 
   if (rawPoints.length > MAX_POINTS) {
     warnings.push(
-      `Точек в файле: ${rawPoints.length} — расчёт выполняется для первых ${MAX_POINTS}`
+      `Точек в файле: ${rawPoints.length} — расчёт для первых ${MAX_POINTS}`
     );
   }
 
   const points: TrajectoryPoint[] = [];
   let skipped = 0;
+  let minAlt = Infinity;
+  let maxAlt = -Infinity;
 
   for (const raw of rawPoints.slice(0, MAX_POINTS)) {
     if (typeof raw !== "object" || raw === null) {
@@ -91,45 +133,60 @@ export function parseTrajectoryFile(
       continue;
     }
     const p = raw as Record<string, unknown>;
-    const lat = p.lat;
-    const lon = p.lon;
-    const altitude = p.altitude;
-    if (!finite(lat) || lat < -90 || lat > 90) {
+    const lat = asFiniteNumber(p.lat);
+    const lon = asFiniteNumber(p.lon ?? p.lng ?? p.longitude);
+    const altitude = readAltitude(p);
+    if (lat === null || lat < -90 || lat > 90) {
       skipped++;
       continue;
     }
-    if (!finite(lon) || lon < -180 || lon > 180) {
+    if (lon === null || lon < -180 || lon > 180) {
       skipped++;
       continue;
     }
-    if (!finite(altitude)) {
+    if (altitude === null) {
       skipped++;
+      warnings.push(
+        `Точка lat=${lat}, lon=${lon}: нет altitude (высота над уровнем моря) — пропущена`
+      );
       continue;
     }
     points.push({
       lat,
       lon,
       altitudeM: altitude,
-      speedMs: finite(p.speed) ? p.speed : null,
+      speedMs: asFiniteNumber(p.speed) ?? asFiniteNumber(p.velocity),
     });
+    minAlt = Math.min(minAlt, altitude);
+    maxAlt = Math.max(maxAlt, altitude);
   }
 
   if (points.length === 0) {
     return {
       trajectory: null,
       warnings,
-      error: `В «${fileName}» нет ни одной точки с корректными lat/lon/altitude`,
+      error: `В «${fileName}» нет точек с корректными lat/lon/altitude (высота над ур. моря)`,
     };
   }
   if (skipped > 0) {
     warnings.push(`Пропущено точек с некорректными данными: ${skipped}`);
   }
 
+  warnings.push(
+    `Высоты из файла (над ур. моря): ${minAlt.toFixed(0)}…${maxAlt.toFixed(0)} м — используются в расчёте`
+  );
+
   let tripodHeightM: number | null = null;
-  if (finite(root.tripodHeight) && root.tripodHeight >= 0) {
-    tripodHeightM = root.tripodHeight;
+  const trip =
+    asFiniteNumber(root.tripodHeight) ??
+    asFiniteNumber(root.tripod) ??
+    asFiniteNumber(root.antennaHeight);
+  if (trip !== null && trip >= 0) {
+    tripodHeightM = trip;
   } else {
-    warnings.push("tripodHeight не задан — используется высота антенны ПРМ из формы");
+    warnings.push(
+      "tripodHeight не задан — к высоте AMSL из точек ничего не добавляется"
+    );
   }
 
   return {

@@ -733,12 +733,10 @@ export function evaluateTrajectory(
       if (terrain === null && params.useSynthetic) {
         terrain = syntheticElevation(tp.lat, tp.lon);
       }
-      const tripod = trajectory.tripodHeightM ?? params.rxAntHM;
-      // ПРМ на высоте из файла; ниже рельефа — поднята на штатив.
-      const h2 =
-        terrain !== null
-          ? Math.max(tp.altitudeM, raw.rxTerrainM + tripod)
-          : tp.altitudeM;
+      // altitude из .rt — высота над уровнем моря (AMSL).
+      // tripodHeight — доп. высота антенны над этой отметкой (если задана).
+      const tripod = trajectory.tripodHeightM ?? 0;
+      const h2 = tp.altitudeM + tripod;
       const h1 = raw.txTerrainM + params.txAntHM;
 
       const pts = deriveProfile(raw, h1, h2, params.fMHz);
