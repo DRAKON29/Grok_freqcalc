@@ -85,7 +85,9 @@ export function MapPicker({
   const [ready, setReady] = useState(false);
   const [layer, setLayer] = useState<MapLayerKind>("scheme");
 
-  onPickRef.current = onPick;
+  useEffect(() => {
+    onPickRef.current = onPick;
+  }, [onPick]);
 
   // --- Инициализация карты (только на клиенте) ---
   useEffect(() => {
@@ -236,15 +238,16 @@ export function MapPicker({
   }, [pickMode, ready]);
 
   // --- Центрирование на последней установленной точке ---
+  const target = pickMode === "tx" ? tx : rx;
+  const targetLat = target?.lat;
+  const targetLon = target?.lon;
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    const target =
-      pickMode === "tx" ? tx : rx;
-    if (target) {
-      map.setView([target.lat, target.lon], map.getZoom(), { animate: true });
+    if (targetLat != null && targetLon != null) {
+      map.setView([targetLat, targetLon], map.getZoom(), { animate: true });
     }
-  }, [pickMode === "tx" ? tx?.lat : rx?.lat, ready]);
+  }, [targetLat, targetLon, ready]);
 
   const hasTrajectory = trajectory !== undefined && trajectory.length > 1;
 

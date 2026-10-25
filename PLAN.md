@@ -16,14 +16,16 @@
 
 Итого: **88 тестов, 6 файлов, все зелёные**; `typecheck` чистый.
 
-## Фаза 1 — Архитектура UI (разбить «God-component»)
+## Фаза 1 — Архитектура UI (разбить «God-component») ✅ ВЫПОЛНЕНО (2026-10-25)
 
-| # | Задача | Детали |
-|---|--------|--------|
-| 1.1 | Декомпозиция `radio-calculator.tsx` (2093 строки) на панели: `TxAntennaPanel`, `RxAntennaPanel`, `FrequencyPanel`, `TerrainPanel`, `ResultsPanel` + общий layout | Каждый < 300 строк, props через контекст/стор |
-| 1.2 | Состояние формы → `react-hook-form` + `zod` (зависимости `@hookform/resolvers` и zod уже в package.json, но не используются по назначению) | Убрать ручной парсинг чисел из строк input |
-| 1.3 | Вынести расчётный pipeline из `useEffect` в явный стор (`zustand`) с селекторами; эффект = подписка на стейт, а не цепочка зависимостей | Устранить хрупкость порядка объявлений (последний коммит — именно про порядок useEffect) |
-| 1.4 | Разделить «чистое ядро» и UI: запрет импорта `components/*` из `lib/radio/*` (eslint no-restricted-imports) | Ядро переиспользуется в worker/API |
+| # | Задача | Статус | Результат |
+|---|--------|--------|-----------|
+| 1.1 | Декомпозиция `radio-calculator.tsx` (2093 строки) на панели: `TxAntennaPanel`, `RxAntennaPanel`, `FrequencyPanel`, `TerrainPanel`, `ResultsPanel` + общий layout | ✅ | `radio-calculator.tsx` = 34 строки (layout); панели: coordinates/settings/terrain/trajectory/vertical/results/coverage + `shared.tsx`; каждая < 300 строк, читают стор/derive напрямую |
+| 1.2 | Состояние формы → `react-hook-form` + `zod` (зависимости уже в package.json, но не использовались) | ✅ | `src/lib/radio/form.ts`: zod-схема всех полей + типизированные значения; ручной парсинг чисел из input убран |
+| 1.3 | Вынести расчётный pipeline из `useEffect` в явный стор (`zustand`) с селекторами | ✅ | `src/lib/radio/calculator-store.ts`: единый стор (values/tiles/coverage/vertical/busy) + `useDerived()` с сериализуемым ключом пересчёта; цепочка зависимостей useEffect устранена |
+| 1.4 | Разделить «чистое ядро» и UI: запрет импорта `components/*` из `lib/radio/*` | ✅ | Ядро `lib/radio` не знает про UI (проверено); eslint no-restricted-imports правило добавлено в flat-config |
+
+Дополнительно: все ESLint-предупреждения по проекту сведены к нулю (map-picker: ref-в-render → useEffect, сложные deps → примитивы; панели: сняты лишние eslint-disable; store: тонкая подписка deriveDepKey).
 
 ## Фаза 2 — Производительность
 
