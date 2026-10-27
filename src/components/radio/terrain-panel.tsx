@@ -2,7 +2,7 @@
 
 // Панель рельефа: загрузка HGT, синтетический режим, список тайлов, кэш (Фаза 1, 1.1).
 
-import { HardDrive, Mountain, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { Download, HardDrive, Mountain, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -25,6 +25,12 @@ export function TerrainPanel() {
   const tileErrors = useCalculatorStore((s) => s.tileErrors);
   const reading = useCalculatorStore((s) => s.reading);
   const useSynthetic = useCalculatorStore((s) => s.useSynthetic);
+  // Фаза 3.1: автозагрузка DEM через /api/dem
+  const autoDem = useCalculatorStore((s) => s.autoDem);
+  const demBusy = useCalculatorStore((s) => s.demBusy);
+  const demError = useCalculatorStore((s) => s.demError);
+  const setAutoDem = useCalculatorStore((s) => s.setAutoDem);
+  const ensureRequiredTiles = useCalculatorStore((s) => s.ensureRequiredTiles);
   const cacheLoading = useCalculatorStore((s) => s.cacheLoading);
   const cacheCount = useCalculatorStore((s) => s.cacheCount);
   const restoreCachedTiles = useCalculatorStore((s) => s.restoreCachedTiles);
@@ -100,6 +106,44 @@ export function TerrainPanel() {
             </span>
           </span>
         </label>
+
+        {/* --- Фаза 3.1: автозагрузка реального DEM (Copernicus GLO-30) --- */}
+        <label className="flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={autoDem}
+            disabled={useSynthetic}
+            onChange={(e) => setAutoDem(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium">Автозагрузка рельефа (GLO-30)</span>
+            <span className="block text-xs text-muted-foreground">
+              Недостающие тайлы скачиваются автоматически через /api/dem и
+              кэшируются в браузере. {demBusy ? "Загрузка…" : ""}
+            </span>
+          </span>
+        </label>
+
+        {!useSynthetic && autoDem && missingCount > 0 && !demBusy && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => void ensureRequiredTiles()}
+          >
+            <Download className="h-4 w-4" />
+            докачать недостающие тайлы ({missingCount})
+          </Button>
+        )}
+
+        {demError && (
+          <Alert variant="destructive">
+            <TriangleAlert className="h-4 w-4" />
+            <AlertTitle>Автозагрузка DEM</AlertTitle>
+            <AlertDescription>{demError}</AlertDescription>
+          </Alert>
+        )}
 
         {tileErrors.length > 0 && (
           <Alert variant="destructive">

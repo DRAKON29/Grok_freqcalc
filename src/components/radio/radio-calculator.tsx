@@ -11,8 +11,13 @@ import { SettingsPanel } from "@/components/radio/settings-panel";
 import { TerrainPanel } from "@/components/radio/terrain-panel";
 import { TrajectoryPanel } from "@/components/radio/trajectory-panel";
 import { VerticalPanel } from "@/components/radio/vertical-panel";
+import { useDemAuto, useLinkAsync } from "@/lib/radio/calculator-store";
 
 export function RadioCalculator() {
+  // Фаза 2.1 / 3.1: корневые подписки — асинхронный расчёт трассы (worker)
+  // и автозагрузка тайлов DEM под видимую область карты.
+  useLinkAsync();
+  useDemAuto();
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
       {/* ===================== Левая колонка: ввод ===================== */}

@@ -31,6 +31,7 @@ import {
   type Sk42Point,
 } from "./sk42";
 import { clearAllTiles, loadAllCachedBuffers, saveTile } from "./tile-cache";
+import { fetchDemTiles } from "./dem-client";
 import { parseTrajectoryFile, type Trajectory } from "./route";
 import { type TrajectoryResult } from "./engine";
 import type { LatLon } from "./geodesy";
@@ -52,6 +53,10 @@ export interface CalculatorState {
   reading: boolean;
   cacheLoading: boolean;
   cacheCount: number;
+  // Фаза 3.1: автозагрузка DEM через /api/dem
+  autoDem: boolean;
+  demBusy: boolean;
+  demError: string | null;
 
   // --- карта и траектория ---
   pickMode: "tx" | "rx";
@@ -96,6 +101,8 @@ export interface CalculatorState {
   addTileFiles: (files: FileList | null) => Promise<void>;
   removeCachedTiles: () => Promise<void>;
   setUseSynthetic: (v: boolean) => void;
+  setAutoDem: (v: boolean) => void;
+  ensureRequiredTiles: () => Promise<void>;
 
   loadTrajectoryFile: (files: FileList | null) => void;
   clearTrajectory: () => void;
@@ -128,6 +135,10 @@ const initialTerrain = {
   // Изначально true: restoreCachedTiles() восстановит тайлы из IndexedDB.
   cacheLoading: true,
   cacheCount: 0,
+  // Фаза 3.1: автозагрузка реального DEM по умолчанию включена
+  autoDem: true,
+  demBusy: false,
+  demError: null as string | null,
 };
 
 const initialTraj = {
@@ -445,6 +456,36 @@ export function linkDepKey(s: CalculatorState): string {
 }
 
 /**
+ * Фаза 3.1: ключ автозагрузки DEM — меняется при изменении трассы/зоны или
+ * набора доступных тайлов. useDemAuto докачивает недостающие тайлы.
+ */
+export function demDepKey(s: CalculatorState): string {
+  if (!s.autoDem || s.useSynthetic) return "";
+  const d = derive(s);
+  if (!d.geom && !d.txWgs) return "";
+  const required = [...d.required.path, ...d.required.area].sort();
+  const missing = required.filter((n) => !s.tiles.has(n));
+  if (missing.length === 0) return "";
+  return JSON.stringify([d.txWgs, d.rxWgs, s.radiusKm, missing]);
+}
+
+/**
+ * Хук: следит за недостающими тайлами и запускает их автозагрузку через
+ * /api/dem (с дебаунсом, чтобы не долбить API при наборе координат).
+ */
+export function useDemAuto(): void {
+  const key = useCalculatorStore(demDepKey);
+  useEffect(() => {
+    if (!key) return;
+    const t = setTimeout(
+      () => void useCalculatorStore.getState().ensureRequiredTiles(),
+      400
+    );
+    return () => clearTimeout(t);
+  }, [key]);
+}
+
+/**
  * Запуск асинхронного расчёта всех вариантов трассы в worker'е (или
  * синхронном фолбэке) с записью результатов в стор. Отменяет предыдущий
  * расчёт через AbortController. Возвращает promise завершения текущей волны.
@@ -749,6 +790,63 @@ export const useCalculatorStore = create<CalculatorState>()((set, get) => ({
   setUseSynthetic: (v) => {
     set({ useSynthetic: v });
     clearEngineCache();
+  },
+
+  setAutoDem: (v) => {
+    set({ autoDem: v, demError: null });
+    if (v) void get().ensureRequiredTiles();
+  },
+
+  /**
+   * Фаза 3.1: докачать недостающие тайлы трассы/зоны через /api/dem.
+   * Вызывается автоматически при изменении ключа DEM-запроса (см. useDemAuto).
+   */
+  ensureRequiredTiles: async () => {
+    const s = get();
+    if (!s.autoDem || s.useSynthetic || s.demBusy) return;
+    const d = derive(s);
+    const have = s.tiles;
+    const missing = [
+      ...d.required.path.filter((n) => !have.has(n)),
+      ...d.required.area.filter((n) => !have.has(n)),
+    ];
+    if (missing.length === 0) {
+      if (s.demError) set({ demError: null });
+      return;
+    }
+    set({ demBusy: true, demError: null });
+    try {
+      const { tiles, errors } = await fetchDemTiles(missing);
+      if (tiles.length > 0) {
+        const cur = get();
+        const merged = new globalThis.Map(cur.tiles);
+        for (const t of tiles) merged.set(t.name, t);
+        set({ tiles: merged });
+        // Кэш в IndexedDB — чтобы не скачивать повторно после перезагрузки.
+        for (const t of tiles) {
+          try {
+            await saveTile(
+              t.name,
+              t.data.buffer.slice(0) as ArrayBuffer,
+              t.arcSec
+            );
+            set((st) => ({ cacheCount: st.cacheCount + 1 }));
+          } catch {
+            /* IndexedDB недоступен — работаем без персистентного кэша */
+          }
+        }
+        clearEngineCache();
+      }
+      set({
+        demBusy: false,
+        demError: errors.length > 0 ? errors.join("; ") : null,
+      });
+    } catch (e) {
+      set({
+        demBusy: false,
+        demError: e instanceof Error ? e.message : "Ошибка автозагрузки DEM",
+      });
+    }
   },
 
   loadTrajectoryFile: (files) => {
