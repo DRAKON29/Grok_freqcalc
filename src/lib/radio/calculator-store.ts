@@ -4,14 +4,13 @@
 // функции ниже; компоненты вызывают их через useDerived() одним useMemo,
 // что устраняет хрупкую цепочку useEffect из старого radio-calculator.tsx.
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 
 import { parseNum } from "./format";
 import { DEFAULTS, RADIO_FIELDS } from "./form";
 import type { CoordMode, FreqMode, Polarization, PowerUnit } from "./form";
 import {
-  evaluateLink,
   pathGeometry,
   requiredTileNames,
   type CoverageResult,
@@ -19,6 +18,7 @@ import {
   type PathGeom,
   type RadioParams,
 } from "./engine";
+import { requestLink, requestTrajectory } from "./engine-client";
 import { parseHgt, tileKeyAt, type HgtTile } from "./hgt";
 import {
   DEFAULT_HELMERT_SK42_WGS84,
@@ -31,7 +31,7 @@ import {
 } from "./sk42";
 import { clearAllTiles, loadAllCachedBuffers, saveTile } from "./tile-cache";
 import { parseTrajectoryFile, type Trajectory } from "./route";
-import { evaluateTrajectory, type TrajectoryResult } from "./engine";
+import { type TrajectoryResult } from "./engine";
 import type { LatLon } from "./geodesy";
 
 export interface CalculatorState {
@@ -65,6 +65,16 @@ export interface CalculatorState {
   coverageBusy: boolean;
   vertical: VerticalResultLike | null;
   verticalBusy: boolean;
+
+  // --- link-результаты: асинхронный off-thread пересчёт (Фаза 2.1) ---
+  link: LinkResult | null;
+  linkError: string | null;
+  linkBusy: boolean;
+  linkLow: LinkResult | null;
+  linkHigh: LinkResult | null;
+  linkReturn: LinkResult | null;
+  linkRxLow: LinkResult | null;
+  linkRxHigh: LinkResult | null;
 
   // --- действия ---
   setField: (key: string, v: string) => void;
@@ -133,6 +143,16 @@ const initialResults = {
   coverageBusy: false,
   vertical: null as VerticalResultLike | null,
   verticalBusy: false,
+  // Фаза 2.1: трассовые расчёты выполняются off-thread (engine-client),
+  // результаты пишутся асинхронно в стор.
+  link: null as LinkResult | null,
+  linkError: null as string | null,
+  linkBusy: false,
+  linkLow: null as LinkResult | null,
+  linkHigh: null as LinkResult | null,
+  linkReturn: null as LinkResult | null,
+  linkRxLow: null as LinkResult | null,
+  linkRxHigh: null as LinkResult | null,
 };
 
 // ============================================================
@@ -342,13 +362,6 @@ export interface Derived {
   /** Зона покрытия: худший случай = макс. частота ПРД. */
   coverageParams: RadioParams | null;
   geom: PathGeom | null;
-  link: LinkResult | null;
-  linkError: string | null;
-  linkLow: LinkResult | null;
-  linkHigh: LinkResult | null;
-  linkReturn: LinkResult | null;
-  linkRxLow: LinkResult | null;
-  linkRxHigh: LinkResult | null;
   required: ReturnType<typeof requiredTileNames>;
   txTileName: string | null;
   txTileReady: boolean;
@@ -383,23 +396,8 @@ export function derive(s: CalculatorState): Derived {
     }
   }
 
-  const safeLink = (p: RadioParams | null): { link: LinkResult | null; err: string | null } => {
-    if (!geom || !p) return { link: null, err: null };
-    try {
-      return { link: evaluateLink(s.tiles, geom, p), err: null };
-    } catch (e) {
-      return { link: null, err: e instanceof Error ? e.message : "Ошибка расчёта трассы" };
-    }
-  };
-
-  const direct = safeLink(params);
-  const rangeMode = s.freqMode === "range";
-  const linkLow = rangeMode && parsed.txFRangeValid ? safeLink(params ? { ...params, fMHz: parsed.txFMin } : null).link : null;
-  const linkHigh = rangeMode && parsed.txFRangeValid ? safeLink(params ? { ...params, fMHz: parsed.txFMax } : null).link : null;
-  const linkReturn = rangeMode && parsed.rxFRangeValid ? safeLink(returnParams).link : null;
-  const linkRxLow = rangeMode && parsed.rxFRangeValid ? safeLink(params ? { ...params, fMHz: parsed.rxFMin } : null).link : null;
-  const linkRxHigh = rangeMode && parsed.rxFRangeValid ? safeLink(params ? { ...params, fMHz: parsed.rxFMax } : null).link : null;
-
+  // Фаза 2.1: трассовые расчёты выполняются off-thread (engine-client) и
+  // пишутся в стор асинхронно (см. useLinkAsync); derive остаётся чистым.
   const required = requiredTileNames(txWgs, rxWgs, s.radiusKm);
   const txTileName = txWgs ? tileKeyAt(txWgs.lat, txWgs.lon) : null;
   const txTileReady = (txTileName !== null && s.tiles.has(txTileName)) || s.useSynthetic;
@@ -415,18 +413,143 @@ export function derive(s: CalculatorState): Derived {
     returnParams,
     coverageParams,
     geom,
-    link: direct.link,
-    linkError: direct.err,
-    linkLow,
-    linkHigh,
-    linkReturn,
-    linkRxLow,
-    linkRxHigh,
     required,
     txTileName,
     txTileReady,
     beamWidth: parsed.nums.beamWidthDeg ?? 0,
   };
+}
+
+// ============================================================
+// Асинхронный off-thread пересчёт трассы (Фаза 2.1)
+// ============================================================
+
+/** Ключ задачи link-пересчёта: меняется только при значимых изменениях. */
+export function linkDepKey(s: CalculatorState): string {
+  const d = derive(s);
+  if (!d.geom || !d.params) return "";
+  const p = d.params;
+  const f = s.freqMode === "range" ? [s.values.txFMinMHz, s.values.txFMaxMHz, s.values.rxFMinMHz, s.values.rxFMaxMHz] : [s.values.fMHz];
+  return JSON.stringify([
+    d.geom.distanceM,
+    d.geom.fwdAzDeg,
+    d.geom.txWgs,
+    f,
+    p.txAntHM,
+    p.rxAntHM,
+    p.kFactor,
+    p.useSynthetic,
+    [...s.tiles.keys()],
+  ]);
+}
+
+/**
+ * Запуск асинхронного расчёта всех вариантов трассы в worker'е (или
+ * синхронном фолбэке) с записью результатов в стор. Отменяет предыдущий
+ * расчёт через AbortController. Возвращает promise завершения текущей волны.
+ */
+let linkAbort: AbortController | null = null;
+
+export async function runLinkCompute(): Promise<void> {
+  const s = useCalculatorStore.getState();
+  // Отменяем предыдущую волну.
+  if (linkAbort) linkAbort.abort();
+  const ctrl = new AbortController();
+  linkAbort = ctrl;
+  const d = derive(s);
+
+  if (!d.geom || !d.params) {
+    useCalculatorStore.setState({
+      link: null,
+      linkError: null,
+      linkBusy: false,
+      linkLow: null,
+      linkHigh: null,
+      linkReturn: null,
+      linkRxLow: null,
+      linkRxHigh: null,
+    });
+    return;
+  }
+
+  const base = d.params;
+  const rangeMode = s.freqMode === "range";
+  const parsed = d.parsed;
+
+  // Собираем набор уникальных частот: основная + границы диапазонов.
+  const freqs: number[] = [base.fMHz];
+  const push = (f: number | null) => {
+    if (f !== null && Number.isFinite(f) && f > 0 && !freqs.includes(f)) freqs.push(f);
+  };
+  const txFMin = rangeMode && parsed.txFRangeValid ? parsed.txFMin : null;
+  const txFMax = rangeMode && parsed.txFRangeValid ? parsed.txFMax : null;
+  const rxFMin = rangeMode && parsed.rxFRangeValid ? parsed.rxFMin : null;
+  const rxFMax = rangeMode && parsed.rxFRangeValid ? parsed.rxFMax : null;
+  const rxFMid = rangeMode && parsed.rxFRangeValid ? (parsed.rxFMin + parsed.rxFMax) / 2 : null;
+  push(txFMin); push(txFMax); push(rxFMin); push(rxFMax); push(rxFMid);
+
+  useCalculatorStore.setState({ linkBusy: true, linkError: null });
+
+  try {
+    const results = await requestLink({
+      tiles: s.tiles,
+      geom: d.geom,
+      tx: d.points.tx!,
+      rx: d.points.rx!,
+      freqsMHz: freqs,
+      params: base,
+      signal: ctrl.signal,
+    });
+    if (ctrl.signal.aborted) return;
+    const byFreq = new Map<number, LinkResult>();
+    freqs.forEach((f, i) => byFreq.set(f, results[i]));
+    const pick = (f: number | null) => (f !== null ? byFreq.get(f) ?? null : null);
+    useCalculatorStore.setState({
+      link: byFreq.get(base.fMHz) ?? null,
+      linkError: null,
+      linkBusy: false,
+      linkLow: pick(txFMin),
+      linkHigh: pick(txFMax),
+      linkReturn: pick(rxFMid),
+      linkRxLow: pick(rxFMin),
+      linkRxHigh: pick(rxFMax),
+    });
+  } catch (e) {
+    if (ctrl.signal.aborted || (e as Error)?.name === "AbortedError") return;
+    useCalculatorStore.setState({
+      link: null,
+      linkBusy: false,
+      linkError: e instanceof Error ? e.message : "Ошибка расчёта трассы",
+      linkLow: null,
+      linkHigh: null,
+      linkReturn: null,
+      linkRxLow: null,
+      linkRxHigh: null,
+    });
+  } finally {
+    if (linkAbort === ctrl) linkAbort = null;
+  }
+}
+
+/** Хук: подписан на ключ пересчёта трассы, запускает off-thread расчёт. */
+export function useLinkAsync(): void {
+  const key = useCalculatorStore(linkDepKey);
+  useEffect(() => {
+    if (!key) {
+      useCalculatorStore.setState({
+        link: null,
+        linkError: null,
+        linkBusy: false,
+        linkLow: null,
+        linkHigh: null,
+        linkReturn: null,
+        linkRxLow: null,
+        linkRxHigh: null,
+      });
+      return;
+    }
+    void runLinkCompute();
+  }, [key]);
 }
 
 // ============================================================
@@ -646,38 +769,29 @@ export const useCalculatorStore = create<CalculatorState>()((set, get) => ({
     const d = derive(s);
     if (!s.trajectory || !d.params || !d.txWgs || !d.points.tx) return;
     set({ trajectoryBusy: true, trajectoryResult: null });
-    // Вычисляем в макротаске, чтобы UI обновился (как в исходной версии).
-    setTimeout(() => {
-      const st = get();
-      const dd = derive(st);
-      if (!st.trajectory || !dd.params || !dd.txWgs || !dd.points.tx) {
-        set({ trajectoryBusy: false });
-        return;
-      }
-      try {
-        const result = evaluateTrajectory(
-          st.tiles,
-          dd.txWgs,
-          dd.points.tx,
-          {
-            points: st.trajectory.points.map((p) => ({
-              lat: p.lat,
-              lon: p.lon,
-              altitudeM: p.altitudeM,
-            })),
-            tripodHeightM: st.trajectory.tripodHeightM,
-          },
-          dd.params
-        );
+    // Фаза 2.1: расчёт вне основного потока (worker + синхронный фолбэк).
+    void requestTrajectory({
+      tiles: s.tiles,
+      txWgs: d.txWgs,
+      txSk42: d.points.tx,
+      points: s.trajectory.points.map((p) => ({
+        lat: p.lat,
+        lon: p.lon,
+        altitudeM: p.altitudeM,
+      })),
+      tripodHeightM: s.trajectory.tripodHeightM,
+      params: d.params,
+    })
+      .then((result) => {
         set({ trajectoryResult: result, trajectoryBusy: false });
-      } catch (e) {
+      })
+      .catch((e) => {
         set({
           trajectoryError:
             e instanceof Error ? e.message : "Ошибка расчёта траектории",
           trajectoryBusy: false,
         });
-      }
-    }, 50);
+      });
   },
 
   setCoverage: (r) => set({ coverage: r }),

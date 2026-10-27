@@ -31,7 +31,7 @@
 
 | # | Задача | Детали |
 |---|--------|--------|
-| 2.1 | Перенос трассовых расчётов (профиль + дифракция + coverage-карта) в **Web Worker** (`comlink` или postMessage), прогресс-бар, отмена задачи (AbortController) | Тяжёлые циклы по DEM блокируют основной поток |
+| 2.1 | ✅ **ВЫПОЛНЕНО** (2026-10-27) Перенос трассовых расчётов (профиль + дифракция + coverage-карта) в **Web Worker** (postMessage + Transferable ArrayBuffer, без comlink). Файлы: `engine-protocol.ts` (контракт задач/ответов), `engine-worker.ts` (ядро в worker), `engine-client.ts` (singleton, очередь с отменой предыдущей задачи, синхронный fallback при отсутствии Worker). Интегрировано: calculator-store (vertical/coverage — асинхронно, busy-статус как прогресс), coverage/vertical/results-панели. Тесты: `tests/engine-worker.test.ts` — round-trip сериализации, `deriveProfileMulti ≡ deriveProfile` (детерминизм), эквивалентность worker-ядра `evaluateLink`. Итого 94/94 зелёные | Тяжёлые циклы по DEM блокируют основной поток |
 | 2.2 | Кеширование результатов по ключу `(tx, rx, freq, terrain-hash)`; дебаунс пересчёта при вводе | Исключить повторные полные пересчёты |
 | 2.3 | Coverage-расчёт: адаптивная сетка вместо полного brute-force перебора пикетов | Квадратичная сложность на больших картах |
 | 2.4 | Проверить и удалить неиспользуемые зависимости/shadcn-компоненты (carousel, menubar, calendar и т.п.) | Бюджет бандла Vercel |

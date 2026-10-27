@@ -41,6 +41,9 @@ export interface RadioParams {
   kFactor: number;
   /** Если true — при отсутствии HGT использовать синтетический рельеф (демо). */
   useSynthetic?: boolean;
+  /** Параметры Гельмerta СК-42→WGS-84. Не используется ядром трассы
+   *  (геометрия считается заранее в pathGeometry); нужен только для
+   *  серелиализуемости RadioParams при пересылке в worker (Фаза 2, 2.1). */
   helm: Helmert3;
 }
 
@@ -92,9 +95,13 @@ export interface RawProfile {
   txTerrainM: number;
   rxTerrainM: number;
   gapCount: number;
-  usedTiles: Set<string>;
-  missingTiles: Set<string>;
+  /** Имена использованных тайлов — plain-массив (структурировано
+   *  клонируемый, Фаза 2.1); Set доступен через usedTilesSet(). */
+  usedTiles: string[];
+  missingTiles: string[];
 }
+
+export const usedTilesSet = (raw: RawProfile) => new Set(raw.usedTiles);
 
 /**
  * Профиль рельефа вдоль геодезической линии (азимут постоянен в начальной
@@ -171,9 +178,37 @@ export function buildProfileRaw(
     txTerrainM: pts[0].h,
     rxTerrainM: pts[n].h,
     gapCount,
-    usedTiles,
-    missingTiles,
+    usedTiles: Array.from(usedTiles),
+    missingTiles: Array.from(missingTiles),
   };
+}
+
+/**
+ * Профиль для набора частот за один проход по точкам (Фаза 2.1):
+ * los/кривизна уже посчитаны в raw; r1/v вычисляются для всех частот
+ * во внутреннем цикле по одной точке — лучший cache locality, чем
+ * отдельные проходы deriveProfile на частоту.
+ */
+export function deriveProfileMulti(
+  raw: RawProfile,
+  h1AbsM: number,
+  h2AbsM: number,
+  freqsMHz: number[]
+): ProfilePoint[][] {
+  const D = raw.distanceM;
+  const nf = freqsMHz.length;
+  const out: ProfilePoint[][] = Array.from({ length: nf }, () => []);
+  for (const p of raw.pts) {
+    const los = h1AbsM + ((h2AbsM - h1AbsM) * p.d) / D;
+    const inSpan = p.d > 0 && p.d < D;
+    for (let fi = 0; fi < nf; fi++) {
+      const r1 = inSpan ? fresnelRadiusM(p.d, D - p.d, freqsMHz[fi]) : 0;
+      // v = (hc − los)·√2/r1 (знак этапа 1; согласован с evaluateLink)
+      const v = r1 > 0 ? ((p.hc - los) * Math.SQRT2) / r1 : -Infinity;
+      out[fi].push({ ...p, los, r1, v });
+    }
+  }
+  return out;
 }
 
 export interface ProfilePoint extends RawProfilePoint {
@@ -222,34 +257,17 @@ export interface LinkResult {
   obstacles: Array<{ dM: number; hM: number; v: number }>;
 }
 
-/** Полный расчёт трассы ПРД → ПРМ. */
-export function evaluateLink(
-  tiles: HgtTileMap,
+/** Чистая сборка LinkResult из готового профиля (без пересчёта рельефа).
+ *  Используется evaluateLink (main-thread) и engine-worker (Фаза 2.1). */
+export function buildLinkResult(
   geom: PathGeom,
-  params: RadioParams
+  params: RadioParams,
+  raw: RawProfile,
+  pts: ProfilePoint[]
 ): LinkResult {
   const D = geom.distanceM;
-  if (D < 1) {
-    throw new Error("Точки ПРД и ПРМ совпадают");
-  }
-  if (D > 1000_000) {
-    throw new Error("Дальность более 1000 км — модель неприменима");
-  }
-  const step = Math.max(25, D / 400);
-  const nPts = clamp(Math.ceil(D / step), 30, 500);
-
-  const raw = buildProfileRaw(
-    tiles,
-    geom.txWgs,
-    geom.fwdAzDeg * (Math.PI / 180),
-    D,
-    nPts,
-    params.kFactor,
-    !!params.useSynthetic
-  );
   const h1 = raw.txTerrainM + params.txAntHM;
   const h2 = raw.rxTerrainM + params.rxAntHM;
-  const pts = deriveProfile(raw, h1, h2, params.fMHz);
 
   const diff = diffractionLoss(
     pts.map((p) => ({ d: p.d, hc: p.hc })),
@@ -307,6 +325,38 @@ export function evaluateLink(
     gapRatio: raw.gapCount / Math.max(1, raw.pts.length - 2),
     obstacles,
   };
+}
+
+/** Полный расчёт трассы ПРД → ПРМ. */
+export function evaluateLink(
+  tiles: HgtTileMap,
+  geom: PathGeom,
+  params: RadioParams
+): LinkResult {
+  const D = geom.distanceM;
+  if (D < 1) {
+    throw new Error("Точки ПРД и ПРМ совпадают");
+  }
+  if (D > 1000_000) {
+    throw new Error("Дальность более 1000 км — модель неприменима");
+  }
+  const step = Math.max(25, D / 400);
+  const nPts = clamp(Math.ceil(D / step), 30, 500);
+
+  const raw = buildProfileRaw(
+    tiles,
+    geom.txWgs,
+    geom.fwdAzDeg * (Math.PI / 180),
+    D,
+    nPts,
+    params.kFactor,
+    !!params.useSynthetic
+  );
+  const h1 = raw.txTerrainM + params.txAntHM;
+  const h2 = raw.rxTerrainM + params.rxAntHM;
+  const pts = deriveProfile(raw, h1, h2, params.fMHz);
+
+  return buildLinkResult(geom, params, raw, pts);
 }
 
 export interface PointEval {

@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { verticalAnalysis } from "@/lib/radio/engine";
+import { requestVertical } from "@/lib/radio/engine-client";
 import { VERT_MAX_HM } from "@/lib/radio/form";
 import { fmt, parseNum } from "@/lib/radio/format";
 import { useCalculatorStore, useDerived } from "@/lib/radio/calculator-store";
@@ -63,18 +63,33 @@ export function VerticalPanel() {
     const p = d.params;
     const t = useCalculatorStore.getState().tiles;
     const mx = vertMaxHM;
+    const ctrl = new AbortController();
     const timer = setTimeout(() => {
       setVerticalBusy(true);
-      try {
-        setVertical(
-          verticalAnalysis(t, wgs, azDeg, distKm, p, mx, Math.max(0.5, mx / 100))
-        );
-      } catch {
-        setVertical(null);
-      }
-      setVerticalBusy(false);
+      requestVertical({
+        tiles: t,
+        txWgs: wgs,
+        azDeg,
+        distanceKm: distKm,
+        params: p,
+        maxHM: mx,
+        stepHM: Math.max(0.5, mx / 100),
+        signal: ctrl.signal,
+      })
+        .then((r) => {
+          if (!ctrl.signal.aborted) setVertical(r);
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) setVertical(null);
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setVerticalBusy(false);
+        });
     }, 300);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
      
   }, [d.txWgs, d.params, tilesKey, d.txTileReady, values.vertDistKm, values.vertAzDeg, vertMaxHM, setVertical, setVerticalBusy]);
 

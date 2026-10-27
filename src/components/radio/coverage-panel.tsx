@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { scanCoverage } from "@/lib/radio/engine";
+import { requestCoverage } from "@/lib/radio/engine-client";
 import { ANALYSIS_KM } from "@/lib/radio/form";
 import { fmt } from "@/lib/radio/format";
 import { useCalculatorStore, useDerived } from "@/lib/radio/calculator-store";
@@ -51,16 +51,30 @@ export function CoveragePanel() {
     const p = d.coverageParams;
     const t = useCalculatorStore.getState().tiles;
     const r = radiusKm;
+    const ctrl = new AbortController();
     const timer = setTimeout(() => {
       setCoverageBusy(true);
-      try {
-        setCoverage(scanCoverage(t, wgs, p, r));
-      } catch {
-        setCoverage(null);
-      }
-      setCoverageBusy(false);
+      requestCoverage({
+        tiles: t,
+        txWgs: wgs,
+        params: p,
+        analysisKm: r,
+        signal: ctrl.signal,
+      })
+        .then((res) => {
+          if (!ctrl.signal.aborted) setCoverage(res);
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) setCoverage(null);
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setCoverageBusy(false);
+        });
     }, 300);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
      
   }, [d.txWgs, d.coverageParams, tilesKey, radiusKm, d.txTileReady, setCoverage, setCoverageBusy]);
 

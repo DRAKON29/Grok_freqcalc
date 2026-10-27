@@ -27,7 +27,15 @@ export function ResultsPanel() {
   const polarization = useCalculatorStore((s) => s.polarization);
   const useSynthetic = useCalculatorStore((s) => s.useSynthetic);
   const tilesCount = useCalculatorStore((s) => s.tiles.size);
-  const link = d.link;
+  // Фаза 2.1: результаты трассы — асинхронные, из стора (off-thread расчёт).
+  const link = useCalculatorStore((s) => s.link);
+  const linkError = useCalculatorStore((s) => s.linkError);
+  const linkBusy = useCalculatorStore((s) => s.linkBusy);
+  const linkLow = useCalculatorStore((s) => s.linkLow);
+  const linkHigh = useCalculatorStore((s) => s.linkHigh);
+  const linkReturn = useCalculatorStore((s) => s.linkReturn);
+  const linkRxLow = useCalculatorStore((s) => s.linkRxLow);
+  const linkRxHigh = useCalculatorStore((s) => s.linkRxHigh);
   const params = d.params;
 
   const download = (content: string, mime: string, name: string) => {
@@ -54,10 +62,12 @@ export function ResultsPanel() {
         <CardContent>
           {link ? (
             <ProfileChart link={link} fadeMarginDb={params?.fadeMarginDb ?? 0} className="w-full text-foreground" />
-          ) : d.linkError ? (
-            <Placeholder text={d.linkError} warning />
+          ) : linkError ? (
+            <Placeholder text={linkError} warning />
           ) : !d.rxOk ? (
             <Placeholder text="Координаты ПРМ не указаны — профиль не строится. Зона связи доступна." />
+          ) : linkBusy ? (
+            <Placeholder text="Расчёт профиля выполняется в фоновом потоке…" />
           ) : (
             <Placeholder text="Исправьте координаты или параметры, чтобы построить профиль." />
           )}
@@ -208,7 +218,7 @@ export function ResultsPanel() {
               {/* Сравнение на краях диапазонов ПРД и ПРМ */}
               {freqMode === "range" && (d.parsed.txFRangeValid || d.parsed.rxFRangeValid) && (
                 <div className="rounded-lg bg-muted/50 p-3 text-xs">
-                  {d.parsed.txFRangeValid && d.linkLow && d.linkHigh && (
+                  {d.parsed.txFRangeValid && linkLow && linkHigh && (
                     <>
                       <p className="mb-2 font-medium">
                         Диапазон ПРД {fmt(d.parsed.txFMin, 0)}–{fmt(d.parsed.txFMax, 0)} МГц:
@@ -224,18 +234,18 @@ export function ResultsPanel() {
                           </tr>
                         </thead>
                         <tbody>
-                          <RangeRow fMHz={d.parsed.txFMin} link={d.linkLow} fade={params?.fadeMarginDb ?? 0} />
+                          <RangeRow fMHz={d.parsed.txFMin} link={linkLow} fade={params?.fadeMarginDb ?? 0} />
                           <RangeRow fMHz={link.fMHz} link={link} fade={params?.fadeMarginDb ?? 0} />
-                          <RangeRow fMHz={d.parsed.txFMax} link={d.linkHigh} fade={params?.fadeMarginDb ?? 0} />
+                          <RangeRow fMHz={d.parsed.txFMax} link={linkHigh} fade={params?.fadeMarginDb ?? 0} />
                         </tbody>
                       </table>
                     </>
                   )}
-                  {d.parsed.rxFRangeValid && d.linkRxLow && d.linkRxHigh && (
+                  {d.parsed.rxFRangeValid && linkRxLow && linkRxHigh && (
                     <>
                       <p
                         className={`mb-2 font-medium ${
-                          d.parsed.txFRangeValid && d.linkLow && d.linkHigh ? "mt-3" : ""
+                          d.parsed.txFRangeValid && linkLow && linkHigh ? "mt-3" : ""
                         }`}
                       >
                         Диапазон ПРМ {fmt(d.parsed.rxFMin, 0)}–{fmt(d.parsed.rxFMax, 0)} МГц
@@ -252,11 +262,11 @@ export function ResultsPanel() {
                           </tr>
                         </thead>
                         <tbody>
-                          <RangeRow fMHz={d.parsed.rxFMin} link={d.linkRxLow} fade={params?.fadeMarginDb ?? 0} />
-                          {d.linkReturn && (
-                            <RangeRow fMHz={d.linkReturn.fMHz} link={d.linkReturn} fade={params?.fadeMarginDb ?? 0} />
+                          <RangeRow fMHz={d.parsed.rxFMin} link={linkRxLow} fade={params?.fadeMarginDb ?? 0} />
+                          {linkReturn && (
+                            <RangeRow fMHz={linkReturn.fMHz} link={linkReturn} fade={params?.fadeMarginDb ?? 0} />
                           )}
-                          <RangeRow fMHz={d.parsed.rxFMax} link={d.linkRxHigh} fade={params?.fadeMarginDb ?? 0} />
+                          <RangeRow fMHz={d.parsed.rxFMax} link={linkRxHigh} fade={params?.fadeMarginDb ?? 0} />
                         </tbody>
                       </table>
                     </>
