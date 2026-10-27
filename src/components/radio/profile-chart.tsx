@@ -11,7 +11,7 @@
 // - кнопка «Развернуть» — увеличенный просмотр в диалоге;
 // - экспорт видимого участка в SVG и PNG.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Download,
   Maximize2,
@@ -23,6 +23,7 @@ import {
 
 import { fmt } from "@/lib/radio/format";
 import type { LinkResult } from "@/lib/radio/engine";
+import { evaluateHoverPoint } from "@/lib/radio/profile";
 import {
   SIGNAL_COLORS,
   SIGNAL_LABELS,
@@ -151,19 +152,61 @@ export function ProfileChart({
     [],
   );
 
+  // Hover-подсказка (Фаза 2.4): позиция курсора в координатах viewBox +
+  // данные ближайшей точки профиля (чистая логика — src/lib/radio/profile.ts).
+  const [hover, setHover] = useState<{ vx: number; vy: number } | null>(null);
+
+  // Пересчёт позиции курсора под svg (в координатах viewBox) для hover-подсказки.
+  const updateHover = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = svgRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return;
+      const s = Math.min(r.width / W, r.height / H);
+      const vx = (clientX - r.left - (r.width - W * s) / 2) / s;
+      const vy = (clientY - r.top - (r.height - H * s) / 2) / s;
+      setHover({ vx, vy });
+    },
+    []
+  );
+
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<SVGSVGElement>) => {
+      if (e.pointerType !== "touch") updateHover(e.clientX, e.clientY);
       const d = dragRef.current;
       if (!d || e.pointerType === "touch") return;
       panByPixels(e.clientX - d.x, e.clientY - d.y);
       dragRef.current = { x: e.clientX, y: e.clientY };
     },
-    [panByPixels],
+    [panByPixels, updateHover],
   );
 
   const handlePointerUp = useCallback(() => {
     dragRef.current = null;
   }, []);
+
+  const handleLeave = useCallback(() => {
+    dragRef.current = null;
+    setHover(null);
+  }, []);
+
+  const hoverInfo = useMemo(() => {
+    if (!hover) return null;
+    const inv = invertScene(
+      link,
+      view,
+      vex,
+      W,
+      H,
+      (hover.vx - PAD_L) / (W - PAD_L - PAD_R),
+      1 - (hover.vy - PAD_T) / (H - PAD_T - PAD_B)
+    );
+    if (!inv) return null;
+    const hp = evaluateHoverPoint(link.pts, inv.dM);
+    if (!hp) return null;
+    return { ...hp, vx: hover.vx, vy: hover.vy };
+  }, [hover, link, view, vex]);
 
   const touchDist = (t: React.TouchList) =>
     Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
@@ -220,7 +263,7 @@ export function ProfileChart({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
+        onPointerLeave={handleLeave}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -233,6 +276,7 @@ export function ProfileChart({
           vex={vex}
           width={W}
           height={H}
+          hover={hoverInfo}
         />
       </svg>
 
@@ -594,6 +638,67 @@ interface SceneProps {
   vex: number;
   width: number;
   height: number;
+  hover?: HoverState | null;
+}
+
+/** Позиция курсора над сценой профиля (в координатах viewBox) + данные точки. */
+export interface HoverState {
+  vx: number;
+  vy: number;
+  dM: number;
+  terrainM: number;
+  losM: number;
+  clearance: number;
+  v: number;
+  status: "clear" | "grazing" | "blocked" | "edge";
+}
+
+const HOVER_STATUS_LABELS: Record<HoverState["status"], string> = {
+  clear: "зона Френеля чиста",
+  grazing: "зона Френеля затронута",
+  blocked: "LOS экранирована",
+  edge: "нет данных / конец трассы",
+};
+
+// Обратное преобразование «координаты viewBox → дистанция/высота» из
+// тех же формул окон, что и в ProfileScene (x/y). Дублирование минимально
+// намеренно: сцена пересчитывает границы по каждому рендеру.
+function invertScene(
+  link: LinkResult,
+  view: View,
+  vex: number,
+  Wv: number,
+  Hv: number,
+  fx: number,
+  fy: number
+): { dM: number; hM: number } | null {
+  const D = link.distanceM;
+  if (!(D > 0)) return null;
+  let hMin = Infinity;
+  let hMax = -Infinity;
+  for (const p of link.pts) {
+    hMin = Math.min(hMin, p.hc);
+    hMax = Math.max(hMax, p.hc, p.los + 10);
+    if (p.d > 0 && p.d < D) hMin = Math.min(hMin, p.los - p.r1);
+  }
+  hMin = Math.min(hMin, Math.min(link.h1AbsM, link.h2AbsM) - 20);
+  hMax = Math.max(hMax, Math.max(link.h1AbsM, link.h2AbsM) + 20);
+  const span = Math.max(50, hMax - hMin);
+  hMax += span * 0.08;
+  hMin -= span * 0.05;
+  const hMid = (hMax + hMin) / 2;
+  const hSpanV = (hMax - hMin) * vex; // VEx растягивает диапазон вокруг hMid
+  const dLo = (view.cx - 0.5 / view.zx) * D;
+  const dHi = (view.cx + 0.5 / view.zx) * D;
+  const hLo = hMid - hSpanV / 2 / view.zy + (view.cy - 0.5) * (hSpanV / view.zy);
+  const hHi = hLo + hSpanV / view.zy;
+  const plotW = Wv - PAD_L - PAD_R;
+  const plotH = Hv - PAD_T - PAD_B;
+  if (plotW <= 0 || plotH <= 0 || dHi <= dLo || hHi <= hLo) return null;
+  const dM = dLo + fx * (dHi - dLo);
+  const hView = hHi - fy * (hHi - hLo); // высота в «растянутом» виде
+  const hM = hMid + (hView - hMid) / (vex || 1); // инверс VEx
+  return { dM, hM };
 }
 
 function ProfileScene({
@@ -603,6 +708,7 @@ function ProfileScene({
   vex,
   width: Wv,
   height: Hv,
+  hover,
 }: SceneProps) {
   const D = link.distanceM;
   const pts = link.pts;
@@ -696,6 +802,74 @@ function ProfileScene({
   }
 
   const clipId = `profclip-${Math.round(Wv)}-${Math.round(Hv)}`;
+
+  // Hover-подсказка (Фаза 2.4): вертикальная линия в точке ближайшей точки
+  // профиля + всплывающая карточка (полностью в SVG — попадает в экспорт).
+  const HOVER_COLORS: Record<string, string> = {
+    clear: SIGNAL_COLORS.green,
+    grazing: SIGNAL_COLORS.yellow,
+    blocked: SIGNAL_COLORS.red,
+    edge: "#6b7280",
+  };
+  let hoverMark: React.ReactNode = null;
+  if (hover) {
+    const hx = x(hover.dM);
+    const hy = y(hover.terrainM);
+    if (hx >= PAD_L && hx <= Wv - PAD_R && hy >= PAD_T && hy <= PAD_T + plotH) {
+      const color = HOVER_COLORS[hover.status] ?? "#6b7280";
+      const lines = [
+        `${fmt(hover.dM / 1000, 2)} км`,
+        `Рельеф: ${fmt(hover.terrainM, 0)} м · LOS: ${fmt(hover.losM, 0)} м`,
+        `Просвет/r1: ${Number.isFinite(hover.clearance) ? fmt(hover.clearance, 2) : "∞"}`,
+        HOVER_STATUS_LABELS[hover.status],
+      ];
+      const bw = 210;
+      const bh = 14 * lines.length + 12;
+      let bx = hx + 10;
+      if (bx + bw > Wv - PAD_R) bx = hx - 10 - bw;
+      let by = hy - bh - 8;
+      if (by < PAD_T) by = hy + 12;
+      if (by + bh > PAD_T + plotH) by = PAD_T + plotH - bh;
+      hoverMark = (
+        <g pointerEvents="none">
+          <line
+            x1={hx}
+            x2={hx}
+            y1={PAD_T}
+            y2={PAD_T + plotH}
+            stroke={color}
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            strokeOpacity="0.7"
+          />
+          <circle cx={hx} cy={hy} r="3.5" fill={color} stroke="white" strokeWidth="1" />
+          <rect
+            x={bx}
+            y={by}
+            width={bw}
+            height={bh}
+            rx="5"
+            fill="var(--background, #fff)"
+            stroke={color}
+            strokeOpacity="0.5"
+          />
+          {lines.map((t, i) => (
+            <text
+              key={i}
+              x={bx + 8}
+              y={by + 16 + i * 14}
+              fontSize={i === lines.length - 1 ? 10 : 11}
+              fontWeight={i === 0 || i === lines.length - 1 ? 700 : 400}
+              fill={i === lines.length - 1 ? color : "currentColor"}
+              fillOpacity={i === lines.length - 1 ? 1 : 0.85}
+            >
+              {t}
+            </text>
+          ))}
+        </g>
+      );
+    }
+  }
 
   return (
     <>
@@ -870,6 +1044,8 @@ function ProfileScene({
           />
         ))}
       </g>
+
+      {hoverMark}
 
       {/* легенда */}
       <g transform={`translate(${PAD_L}, ${Hv - 8})`}>
