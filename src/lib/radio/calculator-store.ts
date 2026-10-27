@@ -19,6 +19,7 @@ import {
   type RadioParams,
 } from "./engine";
 import { requestLink, requestTrajectory } from "./engine-client";
+import { clearEngineCache } from "./engine-cache";
 import { parseHgt, tileKeyAt, type HgtTile } from "./hgt";
 import {
   DEFAULT_HELMERT_SK42_WGS84,
@@ -531,7 +532,10 @@ export async function runLinkCompute(): Promise<void> {
   }
 }
 
-/** Хук: подписан на ключ пересчёта трассы, запускает off-thread расчёт. */
+/** Хук: подписан на ключ пересчёта трассы, запускает off-thread расчёт.
+ * Фаза 2.2: дебаунс 250 мс — при быстрых правках полей ввода в worker
+ * уходит только финальная задача (промежуточные отменяются); повторные
+ * идентичные задачи отсекает LRU-кеш движка внутри requestLink. */
 export function useLinkAsync(): void {
   const key = useCalculatorStore(linkDepKey);
   useEffect(() => {
@@ -548,7 +552,8 @@ export function useLinkAsync(): void {
       });
       return;
     }
-    void runLinkCompute();
+    const t = setTimeout(() => void runLinkCompute(), 250);
+    return () => clearTimeout(t);
   }, [key]);
 }
 
@@ -726,6 +731,9 @@ export const useCalculatorStore = create<CalculatorState>()((set, get) => ({
       }
     }
     set({ tiles: next, tileErrors: errors, reading: false });
+    // Фаза 2.2: рельеф изменился — сбрасываем кеш результатов (hash
+    // меняется автоматически, но явная очистка освобождает память).
+    clearEngineCache();
   },
 
   removeCachedTiles: async () => {
@@ -735,9 +743,13 @@ export const useCalculatorStore = create<CalculatorState>()((set, get) => ({
       // IndexedDB недоступен
     }
     set({ cacheCount: 0 });
+    clearEngineCache();
   },
 
-  setUseSynthetic: (v) => set({ useSynthetic: v }),
+  setUseSynthetic: (v) => {
+    set({ useSynthetic: v });
+    clearEngineCache();
+  },
 
   loadTrajectoryFile: (files) => {
     if (!files || files.length === 0) return;

@@ -26,6 +26,17 @@ import type {
   EngineTask,
   TileTransfer,
 } from "./engine-protocol";
+import {
+  cacheGetCoverage,
+  cacheGetLink,
+  cacheGetTrajectory,
+  cacheGetVertical,
+  cacheSetCoverage,
+  cacheSetLink,
+  cacheSetTrajectory,
+  cacheSetVertical,
+  terrainHash,
+} from "./engine-cache";
 
 export interface LinkRequest {
   tiles: HgtTileMap;
@@ -180,7 +191,36 @@ function unwrapDone(r: EngineResponse): EngineDone {
   return r;
 }
 
+// --- Фаза 2.2: ключи кеша = terrain-hash + все значимые параметры задачи ---
+
+function paramsKey(p: RadioParams): string {
+  const h = p.helm;
+  return [
+    p.fMHz, p.pTxDbm, p.txGainDbi, p.rxGainDbi, p.txFeederDb, p.rxFeederDb,
+    p.extraLossDb, p.txAntHM, p.rxAntHM, p.sensitivityDbm, p.fadeMarginDb,
+    p.kFactor, !!p.useSynthetic,
+    h.dx, h.dy, h.dz,
+  ].join(",");
+}
+
+function llKey(l: LatLon): string {
+  return `${l.lat},${l.lon}`;
+}
+
 export async function requestLink(req: LinkRequest): Promise<LinkResult[]> {
+  const freqs = req.freqsMHz.length > 0 ? req.freqsMHz : [req.params.fMHz];
+  const key = JSON.stringify([
+    "link",
+    terrainHash(req.tiles, !!req.params.useSynthetic),
+    llKey(req.geom.txWgs),
+    llKey(req.geom.rxWgs),
+    req.geom.distanceM.toFixed(3),
+    req.geom.fwdAzDeg.toFixed(6),
+    freqs.join(";"),
+    paramsKey(req.params),
+  ]);
+  const hit = cacheGetLink(key) as LinkResult[] | undefined;
+  if (hit) return hit;
   const { transfers, clones } = makeTileTransfers(req.tiles);
   const input = {
     tiles: transfers,
@@ -190,25 +230,31 @@ export async function requestLink(req: LinkRequest): Promise<LinkResult[]> {
     freqsMHz: req.freqsMHz,
     params: req.params,
   };
-  return runOrFallback(
+  const result = await runOrFallback(
     { kind: "link", input },
     clones,
     req.signal,
-    () => {
-      const freqs = req.freqsMHz.length > 0 ? req.freqsMHz : [req.params.fMHz];
-      return freqs.map((f) =>
-        evaluateLink(req.tiles, req.geom, { ...req.params, fMHz: f })
-      );
-    },
+    () => freqs.map((f) => evaluateLink(req.tiles, req.geom, { ...req.params, fMHz: f })),
     (r) => {
       const d = unwrapDone(r);
       if (d.kind !== "link") throw new Error("unexpected worker response");
       return d.output.byFreq;
     }
   );
+  cacheSetLink(key, result);
+  return result;
 }
 
 export async function requestCoverage(req: CoverageRequest): Promise<CoverageResult> {
+  const key = JSON.stringify([
+    "cov",
+    terrainHash(req.tiles, !!req.params.useSynthetic),
+    llKey(req.txWgs),
+    req.analysisKm,
+    paramsKey(req.params),
+  ]);
+  const hit = cacheGetCoverage(key) as CoverageResult | undefined;
+  if (hit) return hit;
   const { transfers, clones } = makeTileTransfers(req.tiles);
   const input = {
     tiles: transfers,
@@ -216,7 +262,7 @@ export async function requestCoverage(req: CoverageRequest): Promise<CoverageRes
     params: req.params,
     analysisKm: req.analysisKm,
   };
-  return runOrFallback(
+  const result = await runOrFallback(
     { kind: "coverage", input },
     clones,
     req.signal,
@@ -227,9 +273,23 @@ export async function requestCoverage(req: CoverageRequest): Promise<CoverageRes
       return d.output;
     }
   );
+  cacheSetCoverage(key, result);
+  return result;
 }
 
 export async function requestVertical(req: VerticalRequest): Promise<VerticalResult> {
+  const key = JSON.stringify([
+    "vert",
+    terrainHash(req.tiles, !!req.params.useSynthetic),
+    llKey(req.txWgs),
+    req.azDeg.toFixed(6),
+    req.distanceKm,
+    req.maxHM,
+    req.stepHM.toFixed(6),
+    paramsKey(req.params),
+  ]);
+  const hit = cacheGetVertical(key) as VerticalResult | undefined;
+  if (hit) return hit;
   const { transfers, clones } = makeTileTransfers(req.tiles);
   const input = {
     tiles: transfers,
@@ -240,7 +300,7 @@ export async function requestVertical(req: VerticalRequest): Promise<VerticalRes
     maxHM: req.maxHM,
     stepHM: req.stepHM,
   };
-  return runOrFallback(
+  const result = await runOrFallback(
     { kind: "vertical", input },
     clones,
     req.signal,
@@ -260,9 +320,21 @@ export async function requestVertical(req: VerticalRequest): Promise<VerticalRes
       return d.output;
     }
   );
+  cacheSetVertical(key, result);
+  return result;
 }
 
 export async function requestTrajectory(req: TrajectoryRequest): Promise<TrajectoryResult> {
+  const key = JSON.stringify([
+    "traj",
+    terrainHash(req.tiles, !!req.params.useSynthetic),
+    llKey(req.txWgs),
+    req.tripodHeightM,
+    req.points.map((p) => `${p.lat},${p.lon},${p.altitudeM}`).join(";"),
+    paramsKey(req.params),
+  ]);
+  const hit = cacheGetTrajectory(key) as TrajectoryResult | undefined;
+  if (hit) return hit;
   const { transfers, clones } = makeTileTransfers(req.tiles);
   const input = {
     tiles: transfers,
@@ -272,7 +344,7 @@ export async function requestTrajectory(req: TrajectoryRequest): Promise<Traject
     tripodHeightM: req.tripodHeightM,
     params: req.params,
   };
-  return runOrFallback(
+  const result = await runOrFallback(
     { kind: "trajectory", input },
     clones,
     req.signal,
@@ -290,6 +362,8 @@ export async function requestTrajectory(req: TrajectoryRequest): Promise<Traject
       return d.output;
     }
   );
+  cacheSetTrajectory(key, result);
+  return result;
 }
 
 /** Освободить worker (для тестов/HMR). Ожидающие задачи будут отклонены. */
