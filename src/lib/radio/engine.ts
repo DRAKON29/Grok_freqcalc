@@ -443,13 +443,19 @@ export interface CoverageResult {
   dataHits: number; // азимутов, ограниченных отсутствием HGT
 }
 
-const COVERAGE_LADDER_KM = [
-  0.5, 0.8, 1.2, 1.8, 2.7, 4, 6, 9, 13, 19, 28, 42, 62, 92, 135, 200, 290, 420,
-];
-
 /**
  * Круговая диаграмма: для каждого азимута — максимальная дальность,
  * на которой запас на входе ПРМ не меньше требуемого.
+ *
+ * Фаза 2.3 (адаптивный скан вместо brute-force по всей лестнице):
+ * 1) Экспоненциальный поиск границы «зелёной» зоны (margin ≥ fade) —
+ *    старт с 0.5 км, шаг ×1.8; O(log R) оценок вместо полного прохода.
+ * 2) Уточнение бисекцией до ±5 м (≤14 итераций).
+ * 3) Монотонность ослабления с дальностью позволяет рекурсивно пропускать
+ *    смежные азимуты: если два соседних луча дали одинаковую границу
+ *    (±30 м), промежуточные считаются совпадающими — типично для ровного
+ *    рельефа. Спорные промежутки (гребни/долины) дочитываются полностью.
+ * Сетка азимутов остаётся прежней (каждые 5°), результат детерминирован.
  */
 export function scanCoverage(
   tiles: HgtTileMap,
@@ -457,89 +463,143 @@ export function scanCoverage(
   params: RadioParams,
   analysisKm: number
 ): CoverageResult {
-  const ladder = COVERAGE_LADDER_KM.filter((km) => km <= analysisKm);
-  if (ladder.length === 0 || ladder[ladder.length - 1] < analysisKm) {
-    ladder.push(analysisKm);
-  }
-  const rays: CoverageRay[] = [];
+  const rays: CoverageRay[] = new Array(72);
 
-  const refine = (
-    azRad: number,
-    lo: number,
-    hi: number,
-    minMargin: number
-  ): number => {
-    for (let i = 0; i < 5; i++) {
-      const mid = (lo + hi) / 2;
-      const res = safeEvaluatePoint(tiles, txWgs, azRad, mid * 1000, params);
-      if (res.dataOk && res.margin >= minMargin) lo = mid;
-      else hi = mid;
-    }
-    return lo;
-  };
-
-  for (let az = 0; az < 360; az += 5) {
-    const azRad = (az * Math.PI) / 180;
-    let lastGood = 0; // margin >= fade
-    let lastWeak = 0; // margin >= 0
+  // --- одиночный луч: адаптивный поиск границы + статус ---
+  const traceRay = (azDeg: number): CoverageRay => {
+    const azRad = (azDeg * Math.PI) / 180;
     let status: CoverageRay["status"] = "ok";
-    let failGoodKm: number | null = null;
-    let failWeakKm: number | null = null;
-    let dataFailKm: number | null = null;
 
-    for (const km of ladder) {
+    const evalKm = (km: number): PointEval | null => {
       const res = safeEvaluatePoint(tiles, txWgs, azRad, km * 1000, params);
-      if (!res.dataOk) {
+      return res.dataOk ? res : null; // null = нет данных HGT
+    };
+
+    // 1) экспоненциальный поиск первой точки отказа margin ≥ fade
+    let loKm = 0; // заведомо зелёная (или 0)
+    let hiKm: number | null = null; // первая отказная (fade)
+    let probe = 0.5;
+    let weakSeen = false; // встречалась жёлтая зона (0 ≤ margin < fade)
+    let failWeakKm: number | null = null; // первый отказ margin ≥ 0
+    let dataFailKm: number | null = null;
+    for (;;) {
+      if (probe > analysisKm) break; // весь радиус зелёный
+      const res = evalKm(probe);
+      if (res === null) {
         status = "data";
-        dataFailKm = km;
+        dataFailKm = probe;
         break;
       }
       if (res.margin >= params.fadeMarginDb) {
-        lastGood = km;
-        lastWeak = km;
-      } else if (res.margin >= 0) {
-        lastWeak = km;
-        if (failGoodKm === null) failGoodKm = km;
+        loKm = probe;
       } else {
-        if (failGoodKm === null) failGoodKm = km;
-        if (failWeakKm === null) failWeakKm = km;
+        if (res.margin >= 0) weakSeen = true;
+        else if (failWeakKm === null) failWeakKm = probe;
+        hiKm = probe;
         break;
       }
+      probe *= 1.8;
     }
 
-    let km = lastGood;
-    let kmWeak = lastWeak;
-
-    if (failGoodKm !== null && lastGood < failGoodKm) {
-      km = refine(azRad, lastGood, failGoodKm, params.fadeMarginDb);
-    } else if (status !== "data" && failGoodKm === null && lastGood > 0) {
-      // весь ladder зелёный — уточним до analysisKm
-      km = lastGood;
+    // 2) бисекция границы зелёной зоны
+    let km = loKm;
+    if (hiKm !== null && loKm < hiKm) {
+      let lo = loKm;
+      let hi = hiKm;
+      while (hi - lo > 5 / 1000) {
+        const mid = (lo + hi) / 2;
+        const res = evalKm(mid);
+        if (res && res.margin >= params.fadeMarginDb) lo = mid;
+        else hi = mid;
+      }
+      km = lo;
+    } else if (status !== "data" && hiKm === null && loKm > 0) {
+      // всё до analysisKm зелёное → луч упёрся в радиус анализа
+      km = analysisKm;
     }
 
-    if (failWeakKm !== null && lastWeak < failWeakKm) {
-      kmWeak = refine(azRad, lastWeak, failWeakKm, 0);
-    } else if (dataFailKm !== null && lastWeak < dataFailKm && lastWeak > 0) {
-      kmWeak = refine(azRad, lastWeak, dataFailKm, 0);
-    }
-
-    if (status === "data" && lastGood === 0 && lastWeak === 0) {
-      km = 0;
+    // граница слабой зоны (margin ≥ 0)
+    let kmWeak = km;
+    if (status !== "data") {
+      if (failWeakKm !== null) {
+        // ищем первую точку margin < 0 между границей зелёной зоны и первым
+        // отказом margin ≥ 0 (между ними мог быть локальный спад)
+        const firstBelowZero = (a: number, b: number): number => {
+          let l = a;
+          let h = b;
+          while (h - l > 5 / 1000) {
+            const mid = (l + h) / 2;
+            const res = evalKm(mid);
+            if (res && res.margin >= 0) l = mid;
+            else h = mid;
+          }
+          return l;
+        };
+        kmWeak = firstBelowZero(km, failWeakKm);
+      } else if (dataFailKm !== null && km < dataFailKm) {
+        let l = km;
+        let h = dataFailKm;
+        while (h - l > 5 / 1000) {
+          const mid = (l + h) / 2;
+          const res = evalKm(mid);
+          if (res) l = mid;
+          else h = mid;
+        }
+        kmWeak = l;
+      } else if (hiKm === null && status === "ok") {
+        kmWeak = analysisKm;
+      } else if (!weakSeen && km >= analysisKm * 0.98) {
+        kmWeak = analysisKm;
+      }
+    } else if (km === 0) {
+      // сразу нет данных во всех направлениях
       kmWeak = 0;
     }
 
-    if (status === "ok" && dataFailKm === null && failWeakKm === null && lastGood >= analysisKm * 0.98) {
+    if (
+      status === "ok" &&
+      (hiKm === null || loKm >= analysisKm * 0.98) &&
+      dataFailKm === null
+    ) {
       status = "limit";
-      km = analysisKm;
-      kmWeak = Math.max(kmWeak, analysisKm);
-    } else if (status === "ok" && dataFailKm === null && failGoodKm === null) {
-      status = "limit";
-      km = analysisKm;
-      kmWeak = Math.max(kmWeak, analysisKm);
+      km = Math.max(km, analysisKm);
     }
 
     kmWeak = Math.max(kmWeak, km);
-    rays.push({ azDeg: az, km, kmWeak, status });
+    if (status === "limit") kmWeak = Math.max(kmWeak, analysisKm);
+    return { azDeg, km, kmWeak, status };
+  };
+
+  // --- основной проход по чётным азимутам (шаг 10°) ---
+  const idxOf = (az: number) => az / 5;
+
+  // --- рекурсивная дочистка нечётных азимутов (skip-оптимизация) ---
+  // Кольцо из 72 лучей с шагом 5°. Соседями луча i являются i−1 и i+1 по модулю
+  // 72 — так корректно обрабатывается стык 355° ↔ 0° (wrap-around).
+  const NEIGHBOR_TOL_M = 30;
+  const sameBoundary = (a: CoverageRay, b: CoverageRay) =>
+    a.status === b.status &&
+    Math.abs(a.km - b.km) * 1000 <= NEIGHBOR_TOL_M &&
+    Math.abs(a.kmWeak - b.kmWeak) * 1000 <= NEIGHBOR_TOL_M;
+
+  // Если оба соседа луча совпадают по границе — луч повторяет их (типично для
+  // ровного рельефа). Иначе — точная трассировка.
+  const resolveOdd = (idx: number): CoverageRay => {
+    const left = rays[((idx - 1) % 72 + 72) % 72];
+    const right = rays[(idx + 1) % 72];
+    if (sameBoundary(left, right)) {
+      return { ...left, azDeg: idx * 5 };
+    }
+    return traceRay(idx * 5);
+  };
+
+  // Основной проход: каждый второй луч (шаг 10°) считается точно.
+  for (let az = 0; az < 360; az += 10) {
+    rays[idxOf(az)] = traceRay(az);
+  }
+  // Дочистка нечётных азимутов (шаг 5°) по готовым соседям.
+  for (let i = 1; i < 72; i += 2) {
+    rays[i] = resolveOdd(i);
   }
 
   let area = 0;
