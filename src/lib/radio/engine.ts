@@ -95,6 +95,9 @@ export interface RawProfile {
   txTerrainM: number;
   rxTerrainM: number;
   gapCount: number;
+  /** Кол-во точек, где высота взята из синтетического рельефа
+   *  (Фаза 3.2): реальный DEM отсутствовал, но useSynthetic включён. */
+  syntheticCount: number;
   /** Имена использованных тайлов — plain-массив (структурировано
    *  клонируемый, Фаза 2.1); Set доступен через usedTilesSet(). */
   usedTiles: string[];
@@ -125,6 +128,7 @@ export function buildProfileRaw(
   const usedTiles = new Set<string>();
   const missingTiles = new Set<string>();
   let gapCount = 0;
+  let syntheticCount = 0;
   let lastValid = 0;
   let haveValid = false;
 
@@ -135,6 +139,7 @@ export function buildProfileRaw(
     let h = sampleHeight(tiles, p.lat, p.lon);
     if (h === null && useSynthetic) {
       h = syntheticElevation(p.lat, p.lon);
+      if (h !== null) syntheticCount++;
     }
     if (h === null) {
       missingTiles.add(key);
@@ -178,6 +183,7 @@ export function buildProfileRaw(
     txTerrainM: pts[0].h,
     rxTerrainM: pts[n].h,
     gapCount,
+    syntheticCount,
     usedTiles: Array.from(usedTiles),
     missingTiles: Array.from(missingTiles),
   };
@@ -254,6 +260,9 @@ export interface LinkResult {
   pts: ProfilePoint[];
   gapCount: number;
   gapRatio: number;
+  /** Часть профиля построена по синтетическому рельефу (Фаза 3.2):
+   *  реальный DEM отсутствовал, использована демо-модель. */
+  syntheticUsed: boolean;
   obstacles: Array<{ dM: number; hM: number; v: number }>;
 }
 
@@ -323,6 +332,7 @@ export function buildLinkResult(
     pts,
     gapCount: raw.gapCount,
     gapRatio: raw.gapCount / Math.max(1, raw.pts.length - 2),
+    syntheticUsed: raw.syntheticCount > 0,
     obstacles,
   };
 }
@@ -779,6 +789,8 @@ export interface TrajectoryPointResult {
   marginDb: number | null;
   ok: boolean;
   status: "ok" | "data" | "error";
+  /** Точка посчитана с синтетическим рельефом (Фаза 3.2). */
+  syntheticUsed?: boolean;
   message?: string;
 }
 
@@ -789,6 +801,8 @@ export interface TrajectoryResult {
   okCount: number;
   dataCount: number;
   errorCount: number;
+  /** Хоть одна точка посчитана с синтетическим рельефом (Фаза 3.2). */
+  syntheticUsed: boolean;
   bestIdx: number | null; // максимальный запас
   worstIdx: number | null; // минимальный запас
 }
@@ -813,6 +827,7 @@ export function evaluateTrajectory(
   let okCount = 0;
   let dataCount = 0;
   let errorCount = 0;
+  let anySynthetic = false;
   let bestIdx: number | null = null;
   let worstIdx: number | null = null;
   let bestMargin = -Infinity;
@@ -865,6 +880,7 @@ export function evaluateTrajectory(
       const h1 = raw.txTerrainM + params.txAntHM;
 
       const pts = deriveProfile(raw, h1, h2, params.fMHz);
+      if (raw.syntheticCount > 0) anySynthetic = true;
       const diff = diffractionLoss(
         pts.map((p) => ({ d: p.d, hc: p.hc })),
         h1,
@@ -895,6 +911,7 @@ export function evaluateTrajectory(
         prxDbm: prx,
         marginDb: margin,
         ok,
+        syntheticUsed: raw.syntheticCount > 0,
         status: "ok",
       });
       if (ok) okCount++;
@@ -926,6 +943,7 @@ export function evaluateTrajectory(
     okCount,
     dataCount,
     errorCount,
+    syntheticUsed: anySynthetic,
     bestIdx,
     worstIdx,
   };

@@ -20,7 +20,7 @@ function mkPts(
     // кривизна не важна для знаков — hc = h
     pts.push({ d, h, hc: h, valid: true });
   }
-  return { distanceM: distM, pts, txTerrainM: 0, rxTerrainM: 0, gapCount: 0, usedTiles: [], missingTiles: [] };
+  return { distanceM: distM, pts, txTerrainM: 0, rxTerrainM: 0, gapCount: 0, syntheticCount: 0, usedTiles: [], missingTiles: [] };
 }
 
 describe("pointClearance", () => {

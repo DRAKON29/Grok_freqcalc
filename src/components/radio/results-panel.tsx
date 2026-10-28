@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProfileChart } from "@/components/radio/profile-chart";
 import { Metric, Placeholder } from "@/components/radio/shared";
@@ -61,7 +62,24 @@ export function ResultsPanel() {
         </CardHeader>
         <CardContent>
           {link ? (
-            <ProfileChart link={link} fadeMarginDb={params?.fadeMarginDb ?? 0} className="w-full text-foreground" />
+            <div className="space-y-2">
+              {/* Фаза 3.2: явная маркировка синтетического рельефа */}
+              {link.syntheticUsed && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                >
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Внимание: часть профиля построена по <strong>синтетическому
+                    (демо-рельефу)</strong> — реальные данные HGT на трассе
+                    отсутствуют. Результаты не пригодны для инженерных решений;
+                    загрузите тайлы DEM.
+                  </span>
+                </div>
+              )}
+              <ProfileChart link={link} fadeMarginDb={params?.fadeMarginDb ?? 0} className="w-full text-foreground" />
+            </div>
           ) : linkError ? (
             <Placeholder text={linkError} warning />
           ) : !d.rxOk ? (
@@ -146,7 +164,7 @@ export function ResultsPanel() {
                 />
                 <Metric
                   label="Рельеф"
-                  value={useSynthetic && tilesCount === 0 ? "синтетический (демо)" : "HGT/SRTM"}
+                  value={link.syntheticUsed ? "синтетический (демо) ⚠" : tilesCount === 0 && useSynthetic ? "синтетический (демо) ⚠" : "HGT/SRTM"}
                 />
               </dl>
 

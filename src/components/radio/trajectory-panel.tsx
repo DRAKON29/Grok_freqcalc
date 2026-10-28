@@ -130,6 +130,19 @@ export function TrajectoryPanel() {
           </div>
         )}
 
+        {trajectoryResult?.syntheticUsed && (
+          <Alert className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+            <TriangleAlert className="h-4 w-4" />
+            <AlertTitle>Синтетический рельеф (демо)</AlertTitle>
+            <AlertDescription className="text-xs">
+              Часть траекторий посчитана по синтетической модели высот —
+              реальные данные HGT на этих участках отсутствуют. Результаты не
+              пригодны для инженерных решений; загрузите тайлы DEM или
+              включите автозагрузку рельефа.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {trajectory && tiles.size > 0 && d.txWgs && !tiles.has(tileKeyAt(d.txWgs.lat, d.txWgs.lon)) && !useSynthetic && (
           <Alert variant="destructive">
             <TriangleAlert className="h-4 w-4" />
