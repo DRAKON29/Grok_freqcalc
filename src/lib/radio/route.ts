@@ -45,20 +45,38 @@ function asFiniteNumber(v: unknown): number | null {
   return null;
 }
 
+/** Ошибки синтаксиса JSON с привязкой к позиции (Фаза 3.3): вместо
+ *  молчаливого «не является корректным JSON» — строка/колонка и фрагмент. */
+function describeJsonSyntaxError(err: unknown, text: string): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = /position (\d+)/i.exec(msg);
+  if (!m) return msg;
+  const pos = Math.min(Number(m[1]), text.length);
+  const before = text.slice(0, pos);
+  const line = before.split("\n").length;
+  const col = pos - (before.lastIndexOf("\n") + 1);
+  const fragStart = Math.max(0, pos - 20);
+  const frag = text
+    .slice(fragStart, Math.min(text.length, pos + 20))
+    .replace(/\n/g, "↵");
+  return `${msg} — строка ${line}, колонка ${col + 1}: …${frag}…`;
+}
+
 /** Попытка починить JSON без внешней обёртки { ... }. */
 function tryParseJson(text: string): unknown {
   const trimmed = text.replace(/^\uFEFF/, "").trim();
+  let firstErr: unknown = null;
   try {
     return JSON.parse(trimmed);
-  } catch {
-    /* try wrap */
+  } catch (e) {
+    firstErr = e;
   }
   try {
     return JSON.parse(`{${trimmed}}`);
   } catch {
-    /* try if only route array fragment */
+    /* не удалось — сообщаем про оригинальный документ */
   }
-  throw new Error("not json");
+  throw new Error(describeJsonSyntaxError(firstErr, trimmed));
 }
 
 function readAltitude(p: Record<string, unknown>): number | null {
@@ -81,11 +99,13 @@ export function parseTrajectoryFile(
   let data: unknown;
   try {
     data = tryParseJson(text);
-  } catch {
+  } catch (e) {
     return {
       trajectory: null,
       warnings,
-      error: `Файл «${fileName}» не является корректным JSON`,
+      error: `Файл «${fileName}» не является корректным JSON: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
     };
   }
 

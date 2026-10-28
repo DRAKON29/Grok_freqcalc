@@ -130,4 +130,22 @@ describe("parseTrajectoryFile (JSON route.points)", () => {
     expect(res.error).toBeNull();
     expect(res.trajectory?.points.length).toBe(1);
   });
+
+  // Фаза 3.3: жёсткий парсер — сообщение об ошибке с привязкой к позиции,
+  // а не глухое «не является корректным JSON».
+  it("битый синтаксис → ошибка со строкой/колонкой и фрагментом", () => {
+    const broken = '{\n  "route": {"points": [\n    {"lat": 50.1, "lon": 36.8,}\n  ]}\n}';
+    const res = parseTrajectoryFile("broken.json", broken);
+    expect(res.trajectory).toBeNull();
+    expect(res.error).toContain("не является корректным JSON");
+    expect(res.error).toMatch(/строка \d+, колонка \d+/);
+    // фрагмент вокруг позиции ошибки (trailing comma) содержит «lon»
+    expect(res.error).toContain("lon");
+  });
+
+  it("полностью мусорный файл → error без исключения, позиция не обязательна", () => {
+    const res = parseTrajectoryFile("x.rt", "{{{ not json at all");
+    expect(res.trajectory).toBeNull();
+    expect(res.error).toContain("не является корректным JSON");
+  });
 });
