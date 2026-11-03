@@ -25,7 +25,7 @@ export default function IndexPage() {
           Модель справочна. Для ответственных расчётов сверяйтесь с ITU-R P.452/P.1812 и картами рельефа.
         </p>
         <div className="flex items-center rounded-xl bg-neutral-900 px-4 py-2 text-neutral-100">
-          <Logo className="h-5 w-auto" />
+          
         </div>
       </footer>
     </div>
